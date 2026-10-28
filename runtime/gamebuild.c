@@ -163,7 +163,19 @@ bool gamebuild_available(void) {
 
 static void compiler(Args *a, const Tools *t) {
     add(a, t->cc);
-    if (t->zig) add(a, "cc");
+    if (t->zig) {
+        add(a, "cc");
+#ifdef __linux__
+        // An explicit target: for the native one zig looks for the system's libc headers, which SteamOS and other
+        // immutable distributions don't have (LibCStdLibHeaderNotFound); this uses the glibc headers zig ships.
+        add(a, "-target");
+#if defined(__aarch64__)
+        add(a, "aarch64-linux-gnu.2.35");
+#else
+        add(a, "x86_64-linux-gnu.2.35");
+#endif
+#endif
+    }
 }
 
 // ------------------------------------------------------------------ generator progress (its log)
