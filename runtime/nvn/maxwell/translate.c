@@ -1915,6 +1915,61 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
         if (!c->glsl) sp(&c->body, "    threadgroup_barrier(mem_flags::mem_threadgroup);\n");
         else if (c->stage == STAGE_COMPUTE) sp(&c->body, "    barrier();\n");
         else sp(&c->body, "    /* bar */\n");  // GLSL barrier() is compute / tessellation only
+    } else if (OPM(0xebf8000000000000ull, 0xfff8000000000000ull)) {  // RED: global memory reduction, no result (TOTK)
+        // src b@0, address register@8, size@20 (0 u32, 1 s32), op@23 (add min max inc dec and or xor), offset@28 (20
+        // bits, signed), e@48 (64-bit address: the register pair)
+        int size = (int)bits(w, 20, 3), op = (int)bits(w, 23, 3);
+        int64_t off = sbits(w, 28, 20);
+        if (!c->glsl) { fail(c, "red outside vulkan"); return; }
+        if (size > 1 || op == 3 || op == 4) { fail(c, "red size %d op %d", size, op); return; }
+        c->info->uses_gmem = true;
+        c->uses_gmem_store = true;
+        char addr[256];
+        if (a == RZ) sprintf(addr, "ulong(%lld)", (long long)off);
+        else if (bits(w, 48, 1)) sprintf(addr, "((ulong(%s) << 32 | ulong(%s)) + ulong(%lld))", R(a + 1), R(a), (long long)off);
+        else sprintf(addr, "(ulong(%s) + ulong(%lld))", R(a), (long long)off);
+        sp(&c->body, "    { ulong ga = %s - 0x%llxul; if (ga < 0x%llxul) { uint wi = uint(ga >> 2); uint v = %s;\n", addr,
+           (unsigned long long)maxwell_gmem_base, (unsigned long long)maxwell_gmem_size, R((int)bits(w, 0, 8)));
+        static const char *const plain[] = {"atomicAdd", "atomicMin", "atomicMax", NULL, NULL, "atomicAnd", "atomicOr", "atomicXor"};
+        if (size == 1 && (op == 1 || op == 2))  // signed min / max on the uint words: compare and swap
+            sp(&c->body, "      uint o = gmem_.w[wi]; for (;;) { uint nv = uint(%s(int(o), int(v))); uint pv = atomicCompSwap(gmem_.w[wi], o, nv); "
+               "if (pv == o) break; o = pv; }\n", op == 1 ? "min" : "max");
+        else
+            sp(&c->body, "      %s(gmem_.w[wi], v);\n", plain[op]);
+        sp(&c->body, "    } }\n");
+    } else if (OPM(0x50d8000000000000ull, 0xfff8000000000000ull)) {  // VOTE (TOTK)
+        // dest@0 (the ballot of pred a), pred a@39 (!@42), dest pred@45, mode@48 (all, any, eq)
+        int mode = (int)bits(w, 48, 2), pd = (int)bits(w, 45, 3);
+        const char *pa = P((int)bits(w, 39, 3), bits(w, 42, 1));
+        if (!c->glsl || mode == 3) { fail(c, "vote mode %d", mode); return; }
+        if (d != RZ) { sprintf(t, "subgroupBallot(%s).x", pa); set_reg(c, d, t); }  // (lanes 0-31: a Maxwell warp)
+        if (pd != PT) {
+            static const char *const fn[] = {"subgroupAll", "subgroupAny", "subgroupAllEqual"};
+            c->pred_used[pd] = 1;
+            sp(&c->body, "    p%d = %s(%s);\n", pd, fn[mode], pa);
+        }
+    } else if (OPM(0x1800000000000000ull, 0xfc00000000000000ull)) {  // LEA.HI with a constant buffer base (TOTK)
+        // dest@0, offset lo@8, cbuf@20/34, offset hi@39, cc@47, pred@48, scale@51, neg@56, x@57:
+        // dest = cbuf + low word of ((hi:lo) << scale) >> 32
+        int scale = (int)bits(w, 51, 5);
+        if (bits(w, 47, 1) || bits(w, 48, 3) != PT || bits(w, 57, 1)) { fail(c, "lea.hi cc/pred/x"); return; }
+        char cb[128];
+        const char *base = cbuf_ref(c, (int)bits(w, 34, 5), bits(w, 20, 14) * 4, NULL, cb);
+        sprintf(t, "(%s + uint((%s(ulong(%s) << 32 | ulong(%s))) >> %du))", base, bits(w, 56, 1) ? "0ul - " : "",
+                R((int)bits(w, 39, 8)), R(a), 32 - scale);
+        set_reg(c, d, t);
+    } else if (OPM(0x3a00000000000000ull, 0xfe00000000000000ull)) {  // VMNMX, 32-bit operands only (TOTK)
+        // dest@0, a@8, b@20 (register: @50), b width@29, a width@37 (3: 32 bits), c@39, cc@47, a/b signed@48/49,
+        // second op@51 (5: min with c, 6: max with c), sat@55, mx@56 (max of a and b, else min)
+        int op = (int)bits(w, 51, 3);
+        bool sa = bits(w, 48, 1), sb = bits(w, 49, 1), mx = bits(w, 56, 1);
+        if (!bits(w, 50, 1) || bits(w, 37, 2) != 3 || bits(w, 29, 2) != 3 || sa != sb || bits(w, 47, 1) || bits(w, 55, 1) ||
+            (op != 5 && op != 6)) { fail(c, "vmnmx form %016llx", (unsigned long long)w); return; }
+        const char *x = R(a), *y = R((int)bits(w, 20, 8)), *z = R((int)bits(w, 39, 8));
+        const char *f1 = mx ? "max" : "min", *f2 = op == 6 ? "max" : "min";
+        if (sa) sprintf(t, "uint(%s(%s(int(%s), int(%s)), int(%s)))", f2, f1, x, y, z);
+        else sprintf(t, "%s(%s(%s, %s), %s)", f2, f1, x, y, z);
+        set_reg(c, d, t);
     } else {
         fail(c, "unknown instruction %016llx at %#x", (unsigned long long)w, pc);
     }
@@ -2023,6 +2078,8 @@ static const char glsl_prelude[] =
     "#extension GL_KHR_shader_subgroup_basic : require\n"
     "#extension GL_KHR_shader_subgroup_shuffle : require\n"
     "#extension GL_KHR_shader_subgroup_shuffle_relative : require\n"
+    "#extension GL_KHR_shader_subgroup_vote : require\n"
+    "#extension GL_KHR_shader_subgroup_ballot : require\n"
     "#extension GL_EXT_texture_shadow_lod : require\n"
     "#define cbr(cb, off) cb[min((off) >> 4, uint(cb.length() - 1))][((off) >> 2) & 3u]\n"
     "uint as_u(float x) { return floatBitsToUint(x); }\n"
