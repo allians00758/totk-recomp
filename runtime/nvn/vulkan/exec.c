@@ -4807,6 +4807,12 @@ have_pipe:
             oq = (int)i;
         }
     }
+    if (dl_on) {  // (SAVAGEWIND_VK_DEVLOST_TRACE: each draw too, with its shaders and counts)
+        if (!use_index) dl_note("  draw vs %llx fs %llx: %u vertices from %u, %u instances", (unsigned long long)st.program->stages[0].code_addr,
+                                (unsigned long long)st.program->stages[1].code_addr, count, first, inst);
+        else dl_note("  draw vs %llx fs %llx: %u indices, base vertex %d, %u instances", (unsigned long long)st.program->stages[0].code_addr,
+                     (unsigned long long)st.program->stages[1].code_addr, icount, (int)base_vertex, inst);
+    }
     if (!use_index) vkCmdDraw(cb, count, inst, first, base_inst);
     else vkCmdDrawIndexed(cb, icount, inst, 0, base_vertex, base_inst);
     if (oq >= 0) vkCmdEndQuery(cb, oq_pool, (uint32_t)oq);
