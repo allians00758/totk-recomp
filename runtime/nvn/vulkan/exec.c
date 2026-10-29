@@ -4731,6 +4731,27 @@ have_pipe:
     bool use_index = indexed || !native;
     const void *scan_src = NULL;  // deferred index scan (direct index buffer)
     uint32_t scan_isz = 0, scan_restart = 0;
+    {   // A draw of more than 16M vertices or indices, or 65536 instances, is no draw a game means: a count read from
+        // the wrong place. On the GPU it runs the vertex shader billions of times (with every triangle culled, nothing
+        // reaches the rasterizer) until the kernel resets it as hung - TOTK's hang after its intro had that look
+        // (GE, SPI and PA busy, SC idle). Logged and skipped. SAVAGEWIND_NO_DRAW_LIMIT=1: drawn anyway.
+        static int nolimit = -1, told;
+        if (nolimit < 0) nolimit = getenv("SAVAGEWIND_NO_DRAW_LIMIT") != NULL;
+        uint32_t n_inst = (uint32_t)(indexed ? r->x[6] : r->x[4]);
+        if (!nolimit && (count > (1u << 24) || n_inst > 65536u)) {
+            if (told++ < 32)
+                LOG("[vk] huge draw skipped: vs %llx fs %llx, mode %u, %s %u, %u instances (first/base %lld, index type %llu)\n",
+                    (unsigned long long)st.program->stages[0].code_addr, (unsigned long long)st.program->stages[1].code_addr,
+                    mode, indexed ? "indices" : "vertices", count, n_inst, (long long)(indexed ? (int32_t)r->x[4] : (int64_t)r->x[1]),
+                    (unsigned long long)(indexed ? r->x[1] : 0));
+            stat_skipped++;
+            return;
+        }
+        static int told_big;  // (and the big ones drawn: over 1M vertices or 4096 instances, the first 16)
+        if ((count > (1u << 20) || n_inst > 4096u) && told_big++ < 16)
+            LOG("[vk] big draw: vs %llx fs %llx, mode %u, %s %u, %u instances\n", (unsigned long long)st.program->stages[0].code_addr,
+                (unsigned long long)st.program->stages[1].code_addr, mode, indexed ? "indices" : "vertices", count, n_inst);
+    }
     if (!indexed) {
         first = (uint32_t)r->x[1]; base_inst = (uint32_t)r->x[3]; inst = (uint32_t)r->x[4] ? (uint32_t)r->x[4] : 1;
         max_index = first + count;
