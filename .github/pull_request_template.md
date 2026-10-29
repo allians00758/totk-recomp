@@ -1,15 +1,10 @@
-<!-- Thanks for contributing! Pull requests go against `test`, not `main` (main only moves for a release). -->
+## Что меняется
 
-## What this changes
+<!-- Что исправлено или добавлено; какой вылет или остановку из лога это убирает. -->
 
-<!-- What it fixes or adds, and the issue it closes (Fixes #123). -->
+## Как проверено
 
-## How it was tested
+<!-- На каком железе; что было в логе до и после. -->
 
-<!-- Where in the game you checked it, on which OS and GPU, and what you saw before and after. -->
-
-## Checklist
-
-- [ ] Based on the latest `test` and opened against `test`
-- [ ] Built and run locally, and checked in the game
-- [ ] No game files, keys, firmware, generated game code or save files in the changes
+- [ ] Собрано и запущено
+- [ ] Никаких файлов игры, ключей, сгенерированного кода или сохранений

@@ -35,3 +35,7 @@ tools/ghidra/gq.local.json
 
 # Internal work-branch log, local only
 docs/RAMAS.md
+
+# TOTK Recomp: the generator venv and what is made from your game files
+tools/.venv/
+recomp/
