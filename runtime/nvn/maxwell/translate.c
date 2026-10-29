@@ -22,6 +22,18 @@
 
 #include "shader.h"
 
+// The most iterations a translated loop runs (SAVAGEWIND_LOOP_CAP, 100000 by default): an endless or overlong loop
+// in a shader would otherwise run on until the kernel resets the GPU. A lower cap is a test of whether a GPU hang is
+// such a loop (with SAVAGEWIND_NO_XLATE_CACHE=1: the cap is part of the translations).
+static unsigned loop_cap(void) {
+    static unsigned cap;
+    if (!cap) {
+        const char *e = getenv("SAVAGEWIND_LOOP_CAP");
+        cap = e && atoi(e) > 0 ? (unsigned)atoi(e) : 100000u;
+    }
+    return cap;
+}
+
 uint64_t maxwell_gmem_base, maxwell_gmem_size;
 const uint8_t *maxwell_dbg_code;
 uint32_t maxwell_dbg_pc;
@@ -2279,7 +2291,7 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
     } else if (any_branch) {
         sp(&s, "  uint pc = 8u; uint ssy[16]; uint ssy_n = 0u; uint pbk[16]; uint pbk_n = 0u; uint pcnt[16]; uint pcnt_n = 0u;\n");
         sp(&s, "  bool exit_now = false;\n");
-        sp(&s, "  for (uint guard = 0u; guard < 100000u; guard++) {\n  switch (pc) {\n");
+        sp(&s, "  for (uint guard = 0u; guard < %uu; guard++) {\n  switch (pc) {\n", loop_cap());
         sp(&s, "%s", body.buf ? body.buf : "");
         sp(&s, "    exit_now = true; break;\n  default: exit_now = true; break;\n  }\n  if (exit_now) break;\n  }\n");
     } else {
@@ -2477,7 +2489,7 @@ static bool structure(Flow *f, size_t lo, size_t hi, const Ends *ends, int depth
             Ends e = {{back}, 1};
             bool exits = structure(f, i, back, &e, depth + 1);
             size_t after = next_insn(back);
-            sp(&before[after], "  } while ((%s) && !exited && ++loops < 100000u);\n", cond);
+            sp(&before[after], "  } while ((%s) && !exited && ++loops < %uu);\n", cond, loop_cap());
             if (exits && after < hi) { structure_rest(f, after, hi, ends, depth); return true; }
             i = after;
             continue;
@@ -2766,7 +2778,7 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
     if (any_branch) {
         sp(&s, "  uint pc = 8u; uint ssy[16]; uint ssy_n = 0; uint pbk[16]; uint pbk_n = 0; uint pcnt[16]; uint pcnt_n = 0;\n");
         sp(&s, "  bool exit_now = false;\n");
-        sp(&s, "  for (uint guard = 0; guard < 100000u; guard++) {\n  switch (pc) {\n");
+        sp(&s, "  for (uint guard = 0u; guard < %uu; guard++) {\n  switch (pc) {\n", loop_cap());
         sp(&s, "%s", c->body.buf ? c->body.buf : "");
         sp(&s, "    exit_now = true; break;\n  default: exit_now = true; break;\n  }\n  if (exit_now) break;\n  }\n");
     } else {
