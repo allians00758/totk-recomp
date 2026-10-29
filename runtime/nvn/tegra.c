@@ -132,3 +132,26 @@ void tegra_swizzle(const uint8_t *src, uint8_t *dst, uint32_t wb, uint32_t hb, u
                    uint32_t bh_log2, uint32_t bd_log2) {
     copy_surface(src, dst, wb, hb, d, bpb, bh_log2, bd_log2, false);
 }
+
+// A region of a block-linear level (in blocks: x0, y0, z0 and w x h x d of them) to or from tightly packed linear
+// data (rows of w * bpb bytes). wb, hb: the whole level's size in blocks (its GOB layout).
+void tegra_copy_region(uint8_t *tiled, uint8_t *lin, uint32_t wb, uint32_t hb, uint32_t bpb, uint32_t bh_log2,
+                       uint32_t bd_log2, uint32_t x0, uint32_t y0, uint32_t z0, uint32_t w, uint32_t h, uint32_t d,
+                       bool to_linear) {
+    uint32_t width_gobs = (wb * bpb + 63) / 64;
+    uint32_t gob_rows = 8u << bh_log2;
+    uint64_t blocks_rows = (hb + gob_rows - 1) / gob_rows;
+    uint32_t row = w * bpb, xs = x0 * bpb;
+    for (uint32_t z = 0; z < d; z++)
+        for (uint32_t y = 0; y < h; y++) {
+            uint8_t *l = lin + ((uint64_t)z * h + y) * row;
+            for (uint32_t x = 0; x < row;) {  // (runs inside one 16-byte sector are contiguous in both layouts)
+                uint32_t xb = xs + x, n = 16 - (xb & 15);
+                if (n > row - x) n = row - x;
+                uint64_t o = gob_offset(xb, y0 + y, z0 + z, width_gobs, bh_log2, bd_log2, blocks_rows);
+                if (to_linear) memcpy(l + x, tiled + o, n);
+                else memcpy(tiled + o, l + x, n);
+                x += n;
+            }
+        }
+}

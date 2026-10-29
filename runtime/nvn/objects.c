@@ -800,61 +800,80 @@ NVN(nvnTextureViewGetDepthStencilMode) { *(uint32_t *)AP(1) = TV->ds_mode; RET(!
 NVN(nvnTextureViewGetTarget) { *(uint32_t *)AP(1) = TV->target; RET(!!(TV->setmask & 32)); }
 NVN(nvnTextureViewCompare) { RET(memcmp(AP(0), AP(1), sizeof(NvnTextureView)) == 0); }
 
-NVN(nvnTextureWriteTexels) {
-    // (texture, view, region, data): tightly packed linear texels into the storage (block-linear, or rows at the stride
-    // for pitch textures) of one whole level (the view's base level), for the region's slices (3D) or layers (arrays:
-    // z, plus the view's first layer; 1D arrays: y).
-    // The renderer uploads the written levels at the texture's next use, even when the GPU has drawn into the texture
-    // since: BOTW writes level 0 of its 3D noise this way and renders the other levels from it.
-    NvnTexture *t = HOST(NvnTexture, A(0));
-    const NvnTextureView *v = A(1) ? (const NvnTextureView *)AP(1) : NULL;
-    const int32_t *r = AP(2);  // xoffset, yoffset, zoffset, width, height, depth
-    if (!t || !r || !t->addr || !t->layout.fmt) return;
+// A region of one level of a texture (the view's base level; its first layer for arrays) to or from tightly packed
+// linear texels: region = xoffset, yoffset, zoffset, width, height, depth in texels; z is the slice of a 3D texture
+// or the layer of an array (1D arrays: y). Whole levels as before; any other region texel block by texel block.
+// ReadTexels reads guest memory: what the CPU wrote (TOTK reads parts of a 5120x5120 texture back, changes them and
+// writes them again), not what the GPU has drawn into it since.
+static bool texels(NvnTexture *t, const NvnTextureView *v, const int32_t *r, uint8_t *data, bool write) {
+    if (!t || !r || !data || !t->addr || !t->layout.fmt) return false;
     if (getenv("SAVAGEWIND_LOG_COPIES")) {  // (debugging)
         static int n;
         if (n++ < 200)
-            LOG("[copy] WriteTexels #%llu %ux%ux%u target %u f%#x region %d,%d,%d %dx%dx%d view set %#x level %u layer %u\n",
-                (unsigned long long)t->debug_id, t->width, t->height, t->depth, t->target, t->format, r[0], r[1], r[2], r[3],
-                r[4], r[5], v ? v->setmask : 0, v ? v->base_level : 0, v ? v->min_layer : 0);
+            LOG("[copy] %sTexels #%llu %ux%ux%u target %u f%#x region %d,%d,%d %dx%dx%d view set %#x level %u layer %u\n",
+                write ? "Write" : "Read", (unsigned long long)t->debug_id, t->width, t->height, t->depth, t->target,
+                t->format, r[0], r[1], r[2], r[3], r[4], r[5], v ? v->setmask : 0, v ? v->base_level : 0, v ? v->min_layer : 0);
     }
     uint32_t level = v && (v->setmask & 1) ? v->base_level : 0;
-    if (level >= t->layout.levels) return;
+    if (level >= t->layout.levels) return false;
     LevelLayout l = tegra_level(&t->layout, level);
+    const FormatInfo *f = t->layout.fmt;
+    uint32_t bpb = f->bpb, bw = f->bw ? f->bw : 1, bh = f->bh ? f->bh : 1;
     bool is3d = t->target == 2, array1d = t->target == 3;
-    uint32_t y0 = array1d ? 0 : (uint32_t)r[1], h = array1d ? 1 : (uint32_t)r[4];
+    if (r[0] < 0 || r[1] < 0 || r[2] < 0 || r[3] <= 0) return false;
+    uint32_t x0 = (uint32_t)r[0], w = (uint32_t)r[3];
+    uint32_t y0 = array1d ? 0 : (uint32_t)r[1], h = array1d ? 1 : (uint32_t)(r[4] > 0 ? r[4] : 1);
     uint32_t z0 = array1d ? (uint32_t)r[1] : (uint32_t)r[2];
     uint32_t nz = array1d ? (uint32_t)(r[4] > 0 ? r[4] : 1) : (uint32_t)(r[5] > 0 ? r[5] : 1);
     if (!is3d && v && (v->setmask & 2)) z0 += v->min_layer;
     uint32_t nslices = is3d ? l.d : (t->layout.layers ? t->layout.layers : 1);
-    if (r[0] || y0 || (uint32_t)r[3] != l.w || h != l.h || (is3d && (z0 || nz != l.d)) || z0 + nz > nslices) {
+    if (x0 + w > l.w || y0 + h > l.h || z0 + nz > nslices || x0 % bw || y0 % bh) {
         static int n;
-        if (n++ < 8) LOG("[nvn] partial WriteTexels not implemented (#%llu %ux%u level %u, region %d,%d,%d %dx%dx%d)\n",
-                         (unsigned long long)t->debug_id, t->width, t->height, level, r[0], r[1], r[2], r[3], r[4], r[5]);
-        return;
+        if (n++ < 8) LOG("[nvn] %sTexels outside the level (#%llu %ux%u level %u, region %d,%d,%d %dx%dx%d)\n",
+                         write ? "Write" : "Read", (unsigned long long)t->debug_id, t->width, t->height, level, r[0], r[1],
+                         r[2], r[3], r[4], r[5]);
+        return false;
     }
-    uint32_t bpb = t->layout.fmt->bpb;
+    // (in blocks)
+    uint32_t xb = x0 / bw, yb = y0 / bh, wbk = (w + bw - 1) / bw, hbk = (h + bh - 1) / bh;
     uint8_t *base = (uint8_t *)(uintptr_t)t->addr;
+    uint64_t row = (uint64_t)wbk * bpb;
     if (nvn_texture_flags_pitch(t->flags)) {  // pitch storage: rows at the stride (one level, one layer)
-        uint64_t row = (uint64_t)l.wb * bpb, stride = t->stride ? t->stride : row;
-        kernel_watch_write("WriteTexels", t->addr, stride * l.hb);
-        for (uint32_t y = 0; y < l.hb; y++) memcpy(base + y * stride, (const uint8_t *)AP(3) + y * row, row);
+        uint64_t stride = t->stride ? t->stride : (uint64_t)l.wb * bpb;
+        if (write) kernel_watch_write("WriteTexels", t->addr + yb * stride, stride * hbk);
+        for (uint32_t y = 0; y < hbk; y++) {
+            uint8_t *g = base + (uint64_t)(yb + y) * stride + (uint64_t)xb * bpb, *d = data + y * row;
+            if (write) memcpy(g, d, row);
+            else memcpy(d, g, row);
+        }
     } else if (is3d) {
-        kernel_watch_write("WriteTexels", t->addr + l.offset, tegra_total_size(&t->layout) - l.offset);
-        tegra_swizzle(AP(3), base + l.offset, l.wb, l.hb, l.d, bpb, l.block_height_log2, l.block_depth_log2);
+        if (write) kernel_watch_write("WriteTexels", t->addr + l.offset, tegra_total_size(&t->layout) - l.offset);
+        tegra_copy_region(base + l.offset, data, l.wb, l.hb, bpb, l.block_height_log2, l.block_depth_log2, xb, yb, z0,
+                          wbk, hbk, nz, !write);
     } else {
-        uint64_t layer_size = tegra_layer_size(&t->layout), slice = (uint64_t)l.wb * l.hb * bpb;
+        uint64_t layer_size = tegra_layer_size(&t->layout), slice = row * hbk;
         for (uint32_t i = 0; i < nz; i++) {
             uint64_t dst = (uint64_t)(z0 + i) * layer_size + l.offset;
-            kernel_watch_write("WriteTexels", t->addr + dst, slice);
-            tegra_swizzle((const uint8_t *)AP(3) + i * slice, base + dst, l.wb, l.hb, 1, bpb, l.block_height_log2,
-                          l.block_depth_log2);
+            if (write) kernel_watch_write("WriteTexels", t->addr + dst, (uint64_t)l.wb * l.hb * bpb);
+            tegra_copy_region(base + dst, data + i * slice, l.wb, l.hb, bpb, l.block_height_log2, l.block_depth_log2,
+                              xb, yb, 0, wbk, hbk, 1, !write);
         }
     }
-    __atomic_fetch_or(&t->cpu_levels, 1u << level, __ATOMIC_RELEASE);
-    backend_pool_written(t->addr, tegra_total_size(&t->layout));
+    if (write) {
+        // The renderer uploads the written levels at the texture's next use, even when the GPU has drawn into the
+        // texture since: BOTW writes level 0 of its 3D noise this way and renders the other levels from it.
+        __atomic_fetch_or(&t->cpu_levels, 1u << level, __ATOMIC_RELEASE);
+        backend_pool_written(t->addr, tegra_total_size(&t->layout));
+    }
+    return true;
+}
+NVN(nvnTextureWriteTexels) {  // (texture, view, region, data)
+    texels(HOST(NvnTexture, A(0)), A(1) ? (const NvnTextureView *)AP(1) : NULL, AP(2), (uint8_t *)AP(3), true);
 }
 NVN(nvnTextureWriteTexelsStrided) { LOG("[nvn] WriteTexelsStrided not implemented\n"); (void)c; }
-NVN(nvnTextureReadTexels) { LOG("[nvn] ReadTexels not implemented\n"); (void)c; }
+NVN(nvnTextureReadTexels) {  // (texture, view, region, data)
+    texels(HOST(NvnTexture, A(0)), A(1) ? (const NvnTextureView *)AP(1) : NULL, AP(2), (uint8_t *)AP(3), false);
+}
 NVN(nvnTextureReadTexelsStrided) { (void)c; }
 
 // ================================================================== samplers
