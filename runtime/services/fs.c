@@ -812,6 +812,19 @@ static Service *open_host_fs(const char *sub) {
     return service_new("IFileSystem", filesystem, fs);
 }
 
+// ISaveDataInfoReader: the save data a listing finds (0x60-byte SaveDataInfo entries). The game's own save is a host
+// folder (OpenSaveDataFileSystem), there is no cache storage or other save data to find: every listing is empty.
+static void save_info_reader(Service *s, IpcReq *req, IpcResp *resp) {
+    (void)s;
+    switch (req->cmd) {
+    case 0:  // ReadSaveDataInfo -> count, B buffer
+        OUT(int64_t, 0) = 0;
+        resp_size(resp, 8);
+        break;
+    default: LOG("[fs] ISaveDataInfoReader cmd %u (ok)\n", req->cmd);
+    }
+}
+
 // ------------------------------------------------------------------ fsp-srv
 SERVICE("fsp-srv", fsp_srv) {
     (void)s;
@@ -826,6 +839,12 @@ SERVICE("fsp-srv", fsp_srv) {
         ipc_return_object(resp, open_host_fs(sub));
         break;
     }
+    // OpenSaveDataInfoReader, ...BySaveDataSpaceId, ...OnlyCacheStorage (TOTK at start: its cache storages, then
+    // the game called the null reader), ...WithFilter
+    case 60: case 61: case 62: case 68:
+        LOG("[fs] OpenSaveDataInfoReader (cmd %u): an empty listing\n", req->cmd);
+        ipc_return_object(resp, service_new("ISaveDataInfoReader", save_info_reader, NULL));
+        break;
     case 200: ipc_return_object(resp, open_romfs_storage()); break;  // OpenDataStorageByCurrentProcess
     case 202:  // OpenDataStorageByDataId (system data archives)
         LOG("[fs] OpenDataStorageByDataId %llx (not available)\n", IN(uint64_t, 8));
