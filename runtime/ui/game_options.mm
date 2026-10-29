@@ -813,6 +813,7 @@ extern "C" void rt_opt_back(void) {
 const uint32_t TITLE_DLC_BUTTON = 0x6d;
 
 extern "C" void rt_title_menu_prepare(void) {
+    if (!GAME_SITES_KNOWN) return;
     int n = 0;
     for (uint64_t p = g_site.main_data; p + 0x10 <= g_site.main_end; p += 8) {
         uint32_t count = rd32(p);

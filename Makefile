@@ -235,6 +235,10 @@ gen:  # every module of the exefs, at the addresses tools/layout.py gives them
 
 gen-objs: $(GEN_OBJ)
 
+# The id this build loads game code libraries by (tools/link_gamelib.sh: game code compiled outside make)
+gamelib-id:
+	@echo $(GAMELIB_ID)
+
 # Runtime objects only (no generated code, no link): quick compile check
 runtime-objs: $(RT_OBJ) $(BACKEND_OBJ) $(UI_OBJ)
 

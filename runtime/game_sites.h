@@ -32,6 +32,10 @@ extern "C" {
 #endif
 
 extern GameSites g_site;
+// Whether the loaded game code has its sites: false for game code generated without them (gen.py --no-sites: another
+// game, or a version being brought up). Then g_site is all zero, and what reads or writes the game's own objects
+// through it (the Options pages, the frame pacing, the title screen's version line) stays off.
+#define GAME_SITES_KNOWN (g_site.main_end != 0)
 // The game version the loaded game code is for ("1.8.2"; "" before gamelib_load).
 extern const char *g_game_version;
 

@@ -268,6 +268,7 @@ static int by_name_after(const void *a, const void *b) {  // (RomFile * by the p
 // data of the chosen folder's <path> when it has one (the .bars banks and the Stream_*/ dialogue streams). (The game reads its text language's folder or a fallback;
 // whichever it is, it gets the chosen voices.) Only the file-meta entries change: the data stays in the image.
 static void voice_redirect(int fd, const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
+    if (!GAME_SITES_KNOWN) return;  // (BotW's voice banks and RSTB; another game's RomFS is left as it is)
     const char *vf = language_voice_folder();
     if (!vf) return;
     char pre[64];
@@ -457,7 +458,7 @@ static void rom_index(int fd) {
     // The title screen's version line shows System/Version.txt ("1.8.2") through "Ver.%s": it reads "Savage Wind
     // <major>.<minor>" instead (the "Ver." goes in fs_title_version_patch), unless the overlay folder replaces the
     // file. The line's text box holds 15 characters, so the full version is only in Savage Wind Configuration.
-    for (int i = 0; i < rom_nfiles; i++) {
+    for (int i = 0; i < rom_nfiles && GAME_SITES_KNOWN; i++) {  // (only where fs_title_version_patch applies)
         if (strcmp(rom_files[i].path, "System/Version.txt")) continue;
         char host[1200];
         struct stat sb;
@@ -491,6 +492,7 @@ static void rom_index(int fd) {
 // 0x71014b854e in the Ghidra project, read by FUN_7100d4b57c and FUN_7100d4bca0); "%s" leaves just "Savage Wind
 // <version>". Called once main is loaded; anything else at that address is left alone.
 void fs_title_version_patch(void) {
+    if (!GAME_SITES_KNOWN) return;
     char *fmt = (char *)(uintptr_t)g_site.title_version_format;
     if (memcmp(fmt, "Ver.%s", 7)) { LOG("[fs] title version: \"Ver.%%s\" not found, left as is\n"); return; }
     memcpy(fmt, "%s", 3);

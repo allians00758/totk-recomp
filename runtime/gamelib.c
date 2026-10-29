@@ -85,6 +85,12 @@ static bool take_sites(const GameLibTables *t) {
         GAME_SITES(GAME_SITE_ENTRY)
 #undef GAME_SITE_ENTRY
     };
+    memset(&g_site, 0, sizeof g_site);
+    if (*t->nsites == 0 && !t->version[0]) {  // (gen.py --no-sites: no game version, no sites; GAME_SITES_KNOWN false)
+        g_game_version = t->version;
+        LOG("[gamelib] game code without sites (gen.py --no-sites): the game's own menus and pacing are left alone\n");
+        return true;
+    }
     for (size_t i = 0; i < sizeof want / sizeof want[0]; i++) {
         uint32_t k = 0;
         while (k < *t->nsites && strcmp(t->sites[k].name, want[i].name)) k++;
