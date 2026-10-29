@@ -369,6 +369,17 @@ static void phys_zero_where(uint64_t addr, uint64_t size, bool mapped) {
     if (!mapped && at < end) phys_zero(at, end - at);
 }
 
+// (diagnostics) The memory type of the region holding addr (0: none): 7 physical memory (MapPhysicalMemory), 4 module
+// .data, 5 heap...
+uint32_t kernel_region_type_at(uint64_t addr) {
+    pthread_mutex_lock(&g_klock);
+    uint32_t t = 0;
+    for (int i = 0; i < nregions && !t; i++)
+        if (addr >= regions[i].addr && addr < regions[i].addr + regions[i].size) t = regions[i].type;
+    pthread_mutex_unlock(&g_klock);
+    return t;
+}
+
 static void query_memory(uint64_t addr, uint64_t out) {
     uint64_t prev_end = 0;
     uint64_t info[5] = {0};  // addr, size, type|attr<<32, perm|ipc<<32, device|pad<<32

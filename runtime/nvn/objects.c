@@ -397,16 +397,48 @@ NVN(nvnMemoryPoolBuilderGetFlags) { RET(G(uint32_t, A(0), 8)); }
 NVN(nvnMemoryPoolBuilderGetMemory) { RET(G(uint64_t, A(0), 0x10)); }
 NVN(nvnMemoryPoolBuilderGetSize) { RET(G(uint64_t, A(0), 0x18)); }
 
+// (diagnostics) The pools that exist, to say which one an address is in (nvn_pool_describe)
+static pthread_mutex_t g_pools_lock = PTHREAD_MUTEX_INITIALIZER;
+static NvnPool *g_pools[8192];
+static int g_npools;
+static void pools_track(NvnPool *p, bool add) {
+    pthread_mutex_lock(&g_pools_lock);
+    if (add) { if (g_npools < (int)(sizeof g_pools / sizeof g_pools[0])) g_pools[g_npools++] = p; }
+    else for (int i = 0; i < g_npools; i++) if (g_pools[i] == p) { g_pools[i] = g_pools[--g_npools]; break; }
+    pthread_mutex_unlock(&g_pools_lock);
+}
+void nvn_pool_describe(uint64_t addr, char *out, size_t n) {
+    pthread_mutex_lock(&g_pools_lock);
+    int k = snprintf(out, n, "no pool");
+    for (int i = 0; i < g_npools; i++) {
+        NvnPool *p = g_pools[i];
+        if (addr >= p->storage && addr < p->storage + p->size) {
+            k = snprintf(out, n, "pool %llx+%llx flags %#x (+%llx)", (unsigned long long)p->storage, (unsigned long long)p->size,
+                         p->flags, (unsigned long long)(addr - p->storage));
+            break;
+        }
+    }
+    (void)k;
+    pthread_mutex_unlock(&g_pools_lock);
+}
+
 NVN(nvnMemoryPoolInitialize) {
     NvnPool *p = calloc(1, sizeof *p);
     p->storage = G(uint64_t, A(1), 0x10);
     p->size = G(uint64_t, A(1), 0x18);
     p->flags = G(uint32_t, A(1), 8);
     SET_HOST(A(0), p);
+    pools_track(p, true);
+    {   // (diagnostics) SAVAGEWIND_LOG_POOLS=1: every pool made
+        static int on = -1;
+        if (on < 0) on = getenv("SAVAGEWIND_LOG_POOLS") != NULL;
+        if (on) LOG("[nvn] pool %llx+%llx flags %#x\n", (unsigned long long)p->storage, (unsigned long long)p->size, p->flags);
+    }
     RET(1);
 }
 NVN(nvnMemoryPoolFinalize) {
     NvnPool *p = HOST(NvnPool, A(0));
+    if (p) pools_track(p, false);
     if (p) cmdbuf_pool_gone(p->storage, p->storage + p->size);  // (the command lists recorded in it die with it)
     free(p);
     SET_HOST(A(0), 0);

@@ -1703,7 +1703,24 @@ static void compile_program(void *arg) {
 
 // SAVAGEWIND_SHADER_DUMP=1: the Maxwell code of shaders that fail to translate -> build/shaders/<stage>_<addr>.bin
 // (from the shader's first word, at most 64 KB: past its end is other data)
+// (diagnostics) Where a shader that didn't translate lives: its memory pool, the kernel's memory there and its first
+// words (all zero: code not there yet, or memory the CPU doesn't see the GPU's writes to). The first 24 failures.
+static void shader_fail_where(uint64_t code, const char *stage) {
+    static int n;
+    if (!code || n++ >= 24) return;
+    extern void nvn_pool_describe(uint64_t addr, char *out, size_t n);
+    extern uint32_t kernel_region_type_at(uint64_t addr);
+    char pool[160];
+    nvn_pool_describe(code, pool, sizeof pool);
+    const uint32_t *w = (const uint32_t *)(uintptr_t)code;
+    uint32_t nz = 0;
+    for (int i = 0; i < 0x400; i++) nz += w[i] != 0;
+    LOG("[shader] %s %llx: %s, memory type %u, words %08x %08x %08x %08x, %u of the first 1024 words non-zero\n", stage,
+        (unsigned long long)code, pool, kernel_region_type_at(code), w[0], w[1], w[2], w[3], nz);
+}
+
 static void dump_failed_shader(uint64_t code, uint64_t max, const char *stage) {
+    shader_fail_where(code, stage);
     static int on = -1;
     if (on < 0) on = getenv("SAVAGEWIND_SHADER_DUMP") != NULL;
     if (!on || !code) return;
