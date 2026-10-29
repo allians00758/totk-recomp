@@ -1717,6 +1717,12 @@ static void shader_fail_where(uint64_t code, const char *stage) {
     for (int i = 0; i < 0x400; i++) nz += w[i] != 0;
     LOG("[shader] %s %llx: %s, memory type %u, words %08x %08x %08x %08x, %u of the first 1024 words non-zero\n", stage,
         (unsigned long long)code, pool, kernel_region_type_at(code), w[0], w[1], w[2], w[3], nz);
+    if (n <= 3) {  // (the blob's head, 8 bytes a word: where the code starts after the header)
+        const uint64_t *q = (const uint64_t *)(uintptr_t)code;
+        for (int r = 0; r < 0x100 / 8; r += 4)
+            LOG("[shader]   +%03x: %016llx %016llx %016llx %016llx\n", r * 8, (unsigned long long)q[r],
+                (unsigned long long)q[r + 1], (unsigned long long)q[r + 2], (unsigned long long)q[r + 3]);
+    }
 }
 
 static void dump_failed_shader(uint64_t code, uint64_t max, const char *stage) {

@@ -2286,13 +2286,20 @@ static size_t code_end(const uint8_t *code, size_t n) {
 }
 
 // Where the code starts in a stage's blob: after the NVN header and the SPH (0x80) for the graphics stages. Compute
-// code (BotW's) starts at the blob, unless it has an NVN header too: magic 0x12345679 (TOTK's), then zeros up to the
-// code - its first non-zero 16-byte-aligned word from 0x30 on (0x80 at most).
+// code (BotW's) starts at the blob, unless it has an NVN header too: magic 0x12345679 (TOTK's). Then the code starts
+// at 0x80 as in the graphics stages (0x30-0x80 holds other data, not code: taken for code it failed at +0x8). Code is
+// made of 32-byte bundles (a scheduling word, three instructions), so a start that isn't 32-byte aligned can't be it;
+// should 0x80 not hold a bundle (four non-zero words: NOPs aren't zero either), the first one after it is taken.
+static bool bundle_at(const uint8_t *blob, size_t max_size, size_t o) {
+    if (o + 32 > max_size) return false;
+    const uint64_t *w = (const uint64_t *)(blob + o);
+    return w[0] && w[1] && w[2] && w[3];
+}
 static size_t code_offset(const uint8_t *blob, size_t max_size, int stage) {
     if (stage != STAGE_COMPUTE) return 0x80;
-    if (max_size < 0x88 || *(const uint32_t *)blob != 0x12345679u) return 0;
-    for (size_t o = 0x30; o < 0x80; o += 0x10)
-        if (*(const uint64_t *)(blob + o)) return o;
+    if (max_size < 0xA0 || *(const uint32_t *)blob != 0x12345679u) return 0;
+    for (size_t o = 0x80; o <= 0x200; o += 0x20)
+        if (bundle_at(blob, max_size, o)) return o;
     return 0x80;
 }
 
