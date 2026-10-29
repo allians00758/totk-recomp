@@ -8,6 +8,7 @@
 //   bench                            decode throughput
 #include "../runtime/nvn/astc.h"
 
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -320,6 +321,18 @@ static int mode_rand(long per_size, uint64_t seed) {
             for (int i = 0; i < gx * gy; i++) gen_block(blocks + 16 * i, bw, bh, srgb, &st);
             if (ref_decode(blocks, w, h, bw, bh, srgb, ref)) { printf("astcenc failed\n"); return 2; }
             astc_decode_ldr(blocks, w, h, bw, bh, srgb, ours);
+            // HDR blocks: astc.c decodes them as the HDR profile does (clamped to 8 bits; checked against astcenc's
+            // HDR profile apart), the LDR reference makes them magenta - left out here
+            for (int i = 0; i < gx * gy; i++) {
+                const uint8_t *b = blocks + 16 * i;
+                int p, d, cems[4], hdr = 0;
+                int r = ref_block_info(b, bw, bh, srgb, &p, &d, cems, &hdr);
+                bool h_ = (b[0] | (b[1] & 1) << 8) == 0x1FC && (b[1] & 2);  // (fp16 void extent)
+                for (int q = 0; r == 2 && q < p; q++) h_ |= cems[q] == 2 || cems[q] == 3 || cems[q] == 7 || cems[q] == 11 || cems[q] >= 14;
+                if (!h_) continue;
+                int x0 = (i % gx) * bw, y0 = (i / gx) * bh;
+                for (int y = 0; y < bh; y++) memcpy(ref + ((size_t)(y0 + y) * w + x0) * 4, ours + ((size_t)(y0 + y) * w + x0) * 4, (size_t)bw * 4);
+            }
             bad += compare(ours, ref, w, h, bw, bh, blocks, srgb ? "rand srgb" : "rand lin");
         }
         long n = st.err + st.cnst + st.part[1] + st.part[2] + st.part[3] + st.part[4];

@@ -2,8 +2,10 @@
 // decode bit for bit (the decode_unorm8 path its CLI uses for -dl / -ds into 8-bit images):
 //   endpoints expand to 16 bits (linear: v * 257, sRGB: v << 8 | 0x80, all four channels),
 //   texel = (e0 * (64 - w) + e1 * w + 32) >> 6, output = top 8 bits.
-// Error blocks (illegal encodings, HDR void extents) -> magenta; HDR endpoint modes -> magenta
-// endpoints for that partition only (as astcenc and the spec's LDR profile do).
+// Error blocks (illegal encodings) -> magenta. HDR blocks (HDR endpoint modes 2, 3, 7, 11, 14, 15 and fp16 void
+// extents) are decoded as the HDR profile does (astcenc's LNS endpoints, interpolated, then LNS -> fp16) and clamped
+// to 0..1 for the 8-bit image; an LDR-profile decoder makes them magenta, and TOTK has them (its whole scene was
+// tinted magenta).
 #include "astc.h"
 
 #include <string.h>
@@ -361,6 +363,171 @@ static bool unpack_endpoints(int cem, const uint8_t *v, int e0[4], int e1[4]) {
     }
 }
 
+
+// ---- HDR endpoints (astcenc color_unquantize.cpp): 16-bit LNS values (12 bits << 4); alpha 0x7800 is fp16 1.0
+enum { CH_UNORM = 0, CH_LNS = 1, CH_FP16 = 2 };
+
+static int clamp12(int v) { return v < 0 ? 0 : v > 0xFFF ? 0xFFF : v; }
+
+static void hdr_lum_large(const uint8_t *v, int e0[4], int e1[4]) {
+    int y0, y1;
+    if (v[1] >= v[0]) { y0 = v[0] << 4; y1 = v[1] << 4; }
+    else { y0 = (v[1] << 4) + 8; y1 = (v[0] << 4) - 8; }
+    for (int c = 0; c < 3; c++) { e0[c] = y0 << 4; e1[c] = y1 << 4; }
+    e0[3] = e1[3] = 0x7800;
+}
+
+static void hdr_lum_small(const uint8_t *v, int e0[4], int e1[4]) {
+    int y0, y1;
+    if (v[0] & 0x80) { y0 = ((v[1] & 0xE0) << 4) | ((v[0] & 0x7F) << 2); y1 = (v[1] & 0x1F) << 2; }
+    else { y0 = ((v[1] & 0xF0) << 4) | ((v[0] & 0x7F) << 1); y1 = (v[1] & 0xF) << 1; }
+    y1 += y0;
+    if (y1 > 0xFFF) y1 = 0xFFF;
+    for (int c = 0; c < 3; c++) { e0[c] = y0 << 4; e1[c] = y1 << 4; }
+    e0[3] = e1[3] = 0x7800;
+}
+
+static void hdr_rgbo(const uint8_t *in, int e0[4], int e1[4]) {
+    int v0 = in[0], v1 = in[1], v2 = in[2], v3 = in[3];
+    int modeval = ((v0 & 0xC0) >> 6) | (((v1 & 0x80) >> 7) << 2) | (((v2 & 0x80) >> 7) << 3);
+    int majcomp, mode;
+    if ((modeval & 0xC) != 0xC) { majcomp = modeval >> 2; mode = modeval & 3; }
+    else if (modeval != 0xF) { majcomp = modeval & 3; mode = 4; }
+    else { majcomp = 0; mode = 5; }
+    int red = v0 & 0x3F, green = v1 & 0x1F, blue = v2 & 0x1F, scale = v3 & 0x1F;
+    int bit0 = (v1 >> 6) & 1, bit1 = (v1 >> 5) & 1, bit2 = (v2 >> 6) & 1, bit3 = (v2 >> 5) & 1;
+    int bit4 = (v3 >> 7) & 1, bit5 = (v3 >> 6) & 1, bit6 = (v3 >> 5) & 1;
+    int oh = 1 << mode;
+    if (oh & 0x30) green |= bit0 << 6;
+    if (oh & 0x3A) green |= bit1 << 5;
+    if (oh & 0x30) blue |= bit2 << 6;
+    if (oh & 0x3A) blue |= bit3 << 5;
+    if (oh & 0x3D) scale |= bit6 << 5;
+    if (oh & 0x2D) scale |= bit5 << 6;
+    if (oh & 0x04) scale |= bit4 << 7;
+    if (oh & 0x3B) red |= bit4 << 6;
+    if (oh & 0x04) red |= bit3 << 6;
+    if (oh & 0x10) red |= bit5 << 7;
+    if (oh & 0x0F) red |= bit2 << 7;
+    if (oh & 0x05) red |= bit1 << 8;
+    if (oh & 0x0A) red |= bit0 << 8;
+    if (oh & 0x05) red |= bit0 << 9;
+    if (oh & 0x02) red |= bit6 << 9;
+    if (oh & 0x01) red |= bit3 << 10;
+    if (oh & 0x02) red |= bit5 << 10;
+    static const int shamts[6] = {1, 1, 2, 3, 4, 5};
+    int sh = shamts[mode];
+    red <<= sh; green <<= sh; blue <<= sh; scale <<= sh;
+    if (mode != 5) { green = red - green; blue = red - blue; }
+    int t;
+    if (majcomp == 1) { t = red; red = green; green = t; }
+    else if (majcomp == 2) { t = red; red = blue; blue = t; }
+    int red0 = red - scale, green0 = green - scale, blue0 = blue - scale;
+    e0[0] = clamp12(red0) << 4; e0[1] = clamp12(green0) << 4; e0[2] = clamp12(blue0) << 4;
+    e1[0] = clamp12(red) << 4; e1[1] = clamp12(green) << 4; e1[2] = clamp12(blue) << 4;
+    e0[3] = e1[3] = 0x7800;
+}
+
+static void hdr_rgb(const uint8_t *in, int e0[4], int e1[4]) {
+    int v0 = in[0], v1 = in[1], v2 = in[2], v3 = in[3], v4 = in[4], v5 = in[5];
+    int modeval = ((v1 & 0x80) >> 7) | (((v2 & 0x80) >> 7) << 1) | (((v3 & 0x80) >> 7) << 2);
+    int majcomp = ((v4 & 0x80) >> 7) | (((v5 & 0x80) >> 7) << 1);
+    if (majcomp == 3) {
+        e0[0] = v0 << 8; e0[1] = v2 << 8; e0[2] = (v4 & 0x7F) << 9;
+        e1[0] = v1 << 8; e1[1] = v3 << 8; e1[2] = (v5 & 0x7F) << 9;
+        e0[3] = e1[3] = 0x7800;
+        return;
+    }
+    int a = v0 | ((v1 & 0x40) << 2), b0 = v2 & 0x3F, b1 = v3 & 0x3F, c = v1 & 0x3F, d0 = v4 & 0x7F, d1 = v5 & 0x7F;
+    static const int dbits_tab[8] = {7, 6, 7, 6, 5, 6, 5, 6};
+    int dbits = dbits_tab[modeval];
+    int bit0 = (v2 >> 6) & 1, bit1 = (v3 >> 6) & 1, bit2 = (v4 >> 6) & 1, bit3 = (v5 >> 6) & 1;
+    int bit4 = (v4 >> 5) & 1, bit5 = (v5 >> 5) & 1;
+    int oh = 1 << modeval;
+    if (oh & 0xA4) a |= bit0 << 9;
+    if (oh & 0x8) a |= bit2 << 9;
+    if (oh & 0x50) a |= bit4 << 9;
+    if (oh & 0x50) a |= bit5 << 10;
+    if (oh & 0xA0) a |= bit1 << 10;
+    if (oh & 0xC0) a |= bit2 << 11;
+    if (oh & 0x4) c |= bit1 << 6;
+    if (oh & 0xE8) c |= bit3 << 6;
+    if (oh & 0x20) c |= bit2 << 7;
+    if (oh & 0x5B) { b0 |= bit0 << 6; b1 |= bit1 << 6; }
+    if (oh & 0x12) { b0 |= bit2 << 7; b1 |= bit3 << 7; }
+    if (oh & 0xAF) { d0 |= bit4 << 5; d1 |= bit5 << 5; }
+    if (oh & 0x5) { d0 |= bit2 << 6; d1 |= bit3 << 6; }
+    int sx = 32 - dbits;
+    d0 = (int)((uint32_t)d0 << sx) >> sx;
+    d1 = (int)((uint32_t)d1 << sx) >> sx;
+    int vs = (modeval >> 1) ^ 3;
+    a <<= vs; b0 <<= vs; b1 <<= vs; c <<= vs; d0 *= 1 << vs; d1 *= 1 << vs;
+    int r1 = a, g1 = a - b0, bl1 = a - b1, r0 = a - c, g0 = a - b0 - c - d0, bl0 = a - b1 - c - d1;
+    r0 = clamp12(r0); g0 = clamp12(g0); bl0 = clamp12(bl0); r1 = clamp12(r1); g1 = clamp12(g1); bl1 = clamp12(bl1);
+    int t;
+    if (majcomp == 1) { t = r0; r0 = g0; g0 = t; t = r1; r1 = g1; g1 = t; }
+    else if (majcomp == 2) { t = r0; r0 = bl0; bl0 = t; t = r1; r1 = bl1; bl1 = t; }
+    e0[0] = r0 << 4; e0[1] = g0 << 4; e0[2] = bl0 << 4;
+    e1[0] = r1 << 4; e1[1] = g1 << 4; e1[2] = bl1 << 4;
+    e0[3] = e1[3] = 0x7800;
+}
+
+static void hdr_alpha(const uint8_t *in, int *a0, int *a1) {
+    int v6 = in[0], v7 = in[1];
+    int sel = ((v6 >> 7) & 1) | ((v7 >> 6) & 2);
+    v6 &= 0x7F; v7 &= 0x7F;
+    if (sel == 3) { *a0 = v6 << 5; *a1 = v7 << 5; }
+    else {
+        v6 |= (v7 << (sel + 1)) & 0x780;
+        v7 &= 0x3F >> sel;
+        v7 ^= 32 >> sel;
+        v7 -= 32 >> sel;
+        v6 <<= 4 - sel;
+        v7 *= 1 << (4 - sel);
+        v7 += v6;
+        *a0 = v6; *a1 = clamp12(v7);
+    }
+    *a0 <<= 4; *a1 <<= 4;
+}
+
+// HDR endpoint modes: 16-bit endpoints and each channel's kind. False for an LDR mode.
+static bool hdr_endpoints(int cem, const uint8_t *v, int e0[4], int e1[4], uint8_t kind[4]) {
+    switch (cem) {
+    case 2: case 3: case 7: case 11: case 14: case 15:
+        kind[0] = kind[1] = kind[2] = CH_LNS; kind[3] = CH_FP16;
+        break;
+    default: return false;
+    }
+    switch (cem) {
+    case 2: hdr_lum_large(v, e0, e1); return true;
+    case 3: hdr_lum_small(v, e0, e1); return true;
+    case 7: hdr_rgbo(v, e0, e1); return true;
+    case 11: hdr_rgb(v, e0, e1); return true;
+    case 14: hdr_rgb(v, e0, e1); e0[3] = v[6] * 257; e1[3] = v[7] * 257; kind[3] = CH_UNORM; return true;
+    case 15: hdr_rgb(v, e0, e1); hdr_alpha(v + 6, &e0[3], &e1[3]); kind[3] = CH_LNS; return true;
+    default: return false;
+    }
+}
+
+static int lns_to_fp16(int p) {
+    int mc = p & 0x7FF, ec = p >> 11, mt;
+    if (mc < 512) mt = mc * 3;
+    else if (mc < 1536) mt = mc * 4 - 512;
+    else mt = mc * 5 - 2048;
+    int r = ec << 10 | mt >> 3;
+    return r > 0x7BFF ? 0x7BFF : r;
+}
+
+// An fp16 value to 0..255 (clamped to 0..1, rounded).
+static uint8_t fp16_unorm8(int h) {
+    if (h & 0x8000) return 0;
+    int e = h >> 10 & 0x1F, m = h & 0x3FF;
+    if (e >= 15) return 255;  // (>= 1.0, inf, NaN)
+    float f = e ? (float)(1024 + m) / (float)(1 << (25 - e)) : (float)m / (float)(1 << 24);
+    int r = (int)(f * 255.0f + 0.5f);
+    return (uint8_t)(r > 255 ? 255 : r);
+}
+
 // ---- block ----
 
 static void fill_error(uint8_t *out, int texels) {
@@ -376,13 +543,14 @@ bool astc_decode_block(const uint8_t block[16], uint32_t bw, uint32_t bh, bool s
     uint32_t mode = (uint32_t)(b.lo & 0x7FF);
 
     if ((mode & 0x1FF) == 0x1FC) {  // void extent
-        if (mode & 0x200) goto error;           // HDR (fp16) constant: error in LDR
         if ((b.lo >> 10 & 3) != 3) goto error;  // reserved bits
         uint32_t s0 = rbits(&b, 12, 13), s1 = rbits(&b, 25, 13);
         uint32_t t0 = rbits(&b, 38, 13), t1 = rbits(&b, 51, 13);
         bool all_ones = s0 == 0x1FFF && s1 == 0x1FFF && t0 == 0x1FFF && t1 == 0x1FFF;
         if ((s0 >= s1 || t0 >= t1) && !all_ones) goto error;
         uint8_t c[4] = {block[9], block[11], block[13], block[15]};  // top 8 bits of the UNORM16s
+        if (mode & 0x200)  // HDR: fp16 values
+            for (int i = 0; i < 4; i++) c[i] = fp16_unorm8(block[8 + 2 * i] | block[9 + 2 * i] << 8);
         for (int i = 0; i < texels; i++) memcpy(out + 4 * i, c, 4);
         return true;
     }
@@ -447,8 +615,15 @@ bool astc_decode_block(const uint8_t block[16], uint32_t bw, uint32_t bh, bool s
 
     // Endpoints, expanded to 16 bits.
     int ep[4][2][4];
+    uint8_t kind[4][4] = {{0}};  // (per partition and channel: CH_UNORM, or an HDR mode's CH_LNS / CH_FP16)
+    bool any_hdr = false;
     for (int p = 0, k = 0; p < pcount; p++) {
         int *e0 = ep[p][0], *e1 = ep[p][1];
+        if (hdr_endpoints(cem[p], cv + k, e0, e1, kind[p])) {
+            any_hdr = true;
+            k += ((cem[p] >> 2) + 1) * 2;
+            continue;  // (already 16-bit)
+        }
         if (!unpack_endpoints(cem[p], cv + k, e0, e1)) {
             static const int magenta[4] = {0xFF, 0x00, 0xFF, 0xFF};
             memcpy(e0, magenta, sizeof magenta);
@@ -491,7 +666,9 @@ bool astc_decode_block(const uint8_t block[16], uint32_t bw, uint32_t bh, bool s
             const int *e0 = ep[p][0], *e1 = ep[p][1];
             for (int c = 0; c < 4; c++) {
                 int wc = c == ccs ? w[1] : w[0];
-                o[c] = (uint8_t)((e0[c] * (64 - wc) + e1[c] * wc + 32) >> 14);  // >> 6, then top 8 bits
+                int v = (e0[c] * (64 - wc) + e1[c] * wc + 32) >> 6;
+                if (!any_hdr || kind[p][c] == CH_UNORM) o[c] = (uint8_t)(v >> 8);  // (top 8 bits)
+                else o[c] = fp16_unorm8(kind[p][c] == CH_LNS ? lns_to_fp16(v) : v);
             }
         }
     }
