@@ -389,7 +389,21 @@ class Lifter:
         nbits = 8 << size
         addr = XS(rn)
         if o1:
-            raise Unsupported('exclusive pair / CAS')
+            if o2 or size < 2:  # (CASP: size 0/1)
+                raise Unsupported('CAS pair')
+            # LDXP / LDAXP / STXP / STLXP. The 64-bit pair is one 128-bit exclusive access (rt the low half, at the
+            # address), the 32-bit pair one 64-bit access. Acquire / release: the monitor's atomics are at least that.
+            rt2 = bits(w, 10, 5)
+            if size == 3:
+                if L:
+                    return Insn('op', f'{{ __uint128_t p_ = ldxp128(c, {addr}); {set_reg(1, rt, "(uint64_t)p_")} '
+                                      f'{set_reg(1, rt2, "(uint64_t)(p_ >> 64)")} }}')
+                return Insn('op', f'{{ uint32_t st = stxp128(c, {addr}, {X(rt)}, {X(rt2)}); {set_reg(0, rs, "st")} }}')
+            if L:
+                return Insn('op', f'{{ uint64_t p_ = ldx64(c, {addr}); {set_reg(0, rt, "(uint32_t)p_")} '
+                                  f'{set_reg(0, rt2, "(uint32_t)(p_ >> 32)")} }}')
+            return Insn('op', f'{{ uint32_t st = stx64(c, {addr}, ((uint64_t){W(rt2)} << 32) | {W(rt)}); '
+                              f'{set_reg(0, rs, "st")} }}')
         if o2 == 0:
             if L:
                 return Insn('op', set_reg(1, rt, f'ldx{nbits}(c, {addr})'))
