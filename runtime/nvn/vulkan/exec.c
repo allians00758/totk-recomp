@@ -810,6 +810,7 @@ static uint32_t tex_wh[2][64][2];
 // ================================================================== render passes
 static VkFormat pass_color[8], pass_depth, pass_stencil;
 static uint32_t pass_ncolor, pass_samples = 1, pass_w, pass_h;
+static bool clamp_seen;  // (the game has turned depth clamp on once: SAVAGEWIND_LOG_DRAWS starts there)
 // (debugging) SAVAGEWIND_TRACE_TEX (textures.c): texture write histories
 bool vk_trace_tex(NvnTexture *t);
 void vk_trace_event(NvnTexture *t, uint64_t key, NvnTexture *const *srcs, int nsrcs, const char *fmt, ...);
@@ -4810,6 +4811,19 @@ have_pipe:
                 LOG("[vk] draw of %u: vs %llx fs %llx, mode %u, %s, base %lld, %u instances\n", count,
                     (unsigned long long)st.program->stages[0].code_addr, (unsigned long long)st.program->stages[1].code_addr,
                     mode, indexed ? "indexed" : "vertices", (long long)(indexed ? (int32_t)r->x[4] : (int64_t)r->x[1]), n_inst);
+        {   // (debugging GPU hangs) SAVAGEWIND_LOG_DRAWS=<n>: the first n draws from when the game first turns depth
+            // clamp on (TOTK: the scene after the intro, where the GPU hangs), with their counts and pass size - to
+            // match the counts of the draw a RADV hang report (RADV_DEBUG=hang) stops at.
+            static int left = -1;
+            if (left < 0) left = getenv("SAVAGEWIND_LOG_DRAWS") ? atoi(getenv("SAVAGEWIND_LOG_DRAWS")) : 0;
+            if (left > 0 && clamp_seen) {
+                left--;
+                LOG("[draw] vs %llx fs %llx mode %u %s %u base %lld inst %u pass %ux%u\n",
+                    (unsigned long long)st.program->stages[0].code_addr, (unsigned long long)st.program->stages[1].code_addr,
+                    mode, indexed ? "indices" : "vertices", count, (long long)(indexed ? (int32_t)r->x[4] : (int64_t)r->x[1]),
+                    n_inst, pass_w, pass_h);
+            }
+        }
         static int told_big;  // (and the big ones drawn: over 1M vertices or 4096 instances, the first 16)
         if ((count > (1u << 20) || n_inst > 4096u) && told_big++ < 16)
             LOG("[vk] big draw: vs %llx fs %llx, mode %u, %s %u, %u instances\n", (unsigned long long)st.program->stages[0].code_addr,
@@ -6089,6 +6103,7 @@ static void exec_list(uint64_t handle, int depth) {
             static int off = -1;  // SAVAGEWIND_NO_DEPTH_CLAMP=1: ignored (A/B tests)
             if (off < 0) off = getenv("SAVAGEWIND_NO_DEPTH_CLAMP") != NULL;
             static bool logged;
+            if (r->x[0]) clamp_seen = true;
             if (r->x[0] && !logged) { logged = true; LOG("[nvn] SetDepthClamp on (depth clamp %s)\n", g_vk.depth_clamp ? "supported" : "not supported"); }
             st.depth_clamp = r->x[0] != 0 && !off;
             break;
