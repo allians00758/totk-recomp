@@ -2285,8 +2285,19 @@ static size_t code_end(const uint8_t *code, size_t n) {
     return end;
 }
 
+// Where the code starts in a stage's blob: after the NVN header and the SPH (0x80) for the graphics stages. Compute
+// code (BotW's) starts at the blob, unless it has an NVN header too: magic 0x12345679 (TOTK's), then zeros up to the
+// code - its first non-zero 16-byte-aligned word from 0x30 on (0x80 at most).
+static size_t code_offset(const uint8_t *blob, size_t max_size, int stage) {
+    if (stage != STAGE_COMPUTE) return 0x80;
+    if (max_size < 0x88 || *(const uint32_t *)blob != 0x12345679u) return 0;
+    for (size_t o = 0x30; o < 0x80; o += 0x10)
+        if (*(const uint64_t *)(blob + o)) return o;
+    return 0x80;
+}
+
 size_t maxwell_binary_size(const uint8_t *blob, size_t max_size, int stage) {
-    size_t head = stage == STAGE_COMPUTE ? 0 : 0x80;
+    size_t head = code_offset(blob, max_size, stage);
     if (max_size <= head) return max_size;
     return head + code_end(blob + head, (max_size - head) / 8) * 8;
 }
@@ -2515,9 +2526,8 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
     uint32_t sw = key && key->shared_size ? (key->shared_size + 3) / 4 : 256;
     for (c->smem_words = 1; c->smem_words < sw && c->smem_words < 8192; c->smem_words *= 2) {}
     const uint8_t *sph = blob + 0x30;
-    const uint8_t *code = blob + 0x80;
-    // compute programs have neither the 0x30-byte NVN header nor an SPH: code starts at the blob
-    if (stage == STAGE_COMPUTE) code = blob;
+    // compute programs have no SPH, and BotW's no NVN header either: code_offset
+    const uint8_t *code = blob + code_offset(blob, max_size, stage);
     c->code = code;
     if (stage == STAGE_FRAGMENT) {
         c->omap_target = *(const uint32_t *)(sph + 0x48);
