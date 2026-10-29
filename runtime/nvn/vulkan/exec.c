@@ -1496,6 +1496,7 @@ static VkPipelineLayout make_layout(const VkBindingInfo *binds, int nbinds, VkDe
 static uint64_t hmix(uint64_t h, const void *p, size_t n);
 static void save_glsl(const char *src, uint64_t addr, const char *suffix) {
     if (!getenv("SAVAGEWIND_SAVE_MSL")) return;
+    mkdir("build", 0755);  // (in the data folder: "build" exists only in a source checkout)
     mkdir("build/glsl", 0755);
     char path[256];
     uint64_t h = addr ? hmix(1469598103934665603ull, (const void *)(uintptr_t)(addr + 0x30), 0x200) : 0;  // ([draw]'s fs hash)
@@ -1730,6 +1731,7 @@ static void dump_failed_shader(uint64_t code, uint64_t max, const char *stage) {
     static int on = -1;
     if (on < 0) on = getenv("SAVAGEWIND_SHADER_DUMP") != NULL;
     if (!on || !code) return;
+    mkdir("build", 0755);
     mkdir("build/shaders", 0755);
     char path[96];
     snprintf(path, sizeof path, "build/shaders/%s_%llx.bin", stage, (unsigned long long)code);

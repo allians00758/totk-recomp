@@ -1276,7 +1276,7 @@ static void present_locked(NvnTexture *t) {
         static const char *wnext;
         static int winit;
         char wpath[256] = "";
-        if (!winit) { winit = 1; wnext = getenv("SAVAGEWIND_WINDOW_SHOT_AT"); if (wnext) mkdir("build/frames", 0755); }
+        if (!winit) { winit = 1; wnext = getenv("SAVAGEWIND_WINDOW_SHOT_AT"); if (wnext) { mkdir("build", 0755); mkdir("build/frames", 0755); } }
         if (wnext && *wnext && !shot) {
             extern uint64_t framepace_script_frame(uint64_t presented);
             long at = strtol(wnext, NULL, 10);
@@ -1383,7 +1383,7 @@ static void present_locked(NvnTexture *t) {
     {   // SAVAGEWIND_SHOT_AT=<frame>,<frame>,... (ascending): the game image at those frames -> build/frames/frame_N.png
         static const char *next;
         static int init;
-        if (!init) { init = 1; next = getenv("SAVAGEWIND_SHOT_AT"); if (next) mkdir("build/frames", 0755); }
+        if (!init) { init = 1; next = getenv("SAVAGEWIND_SHOT_AT"); if (next) { mkdir("build", 0755); mkdir("build/frames", 0755); } }
         while (next && *next) {
             long at = strtol(next, (char **)&next, 10);
             if ((long)script_frame < at) { while (next > getenv("SAVAGEWIND_SHOT_AT") && next[-1] != ',') next--; break; }
@@ -1401,7 +1401,7 @@ static void present_locked(NvnTexture *t) {
         static int recording;
         if (g_record_frames != recording) {
             recording = g_record_frames;
-            if (recording) mkdir("build/frames", 0755);
+            if (recording) { mkdir("build", 0755); mkdir("build/frames", 0755); }
             LOG("[shot] recording %s at frame %llu\n", recording ? "on" : "off", (unsigned long long)total_frames);
         }
         if (recording && !(total_frames & 1)) {
@@ -1414,7 +1414,7 @@ static void present_locked(NvnTexture *t) {
     if (shot_from < 0) { const char *e = getenv("SAVAGEWIND_SCREENSHOT_FROM"); shot_from = e ? atol(e) : 0; }
     if (shot_every && total_frames % shot_every == 0 && (long)total_frames >= shot_from) {
         char path[256];
-        if (shot_from) mkdir("build/frames", 0755);
+        if (shot_from) { mkdir("build", 0755); mkdir("build/frames", 0755); }
         snprintf(path, sizeof path, shot_from ? "build/frames/frame_%05llu.png" : "build/frame_%05llu.png",
                  (unsigned long long)total_frames);
         renderer_save_texture_tex(b, path);
