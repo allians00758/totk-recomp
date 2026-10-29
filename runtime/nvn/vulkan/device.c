@@ -10,6 +10,7 @@
 #include <unistd.h>
 
 #include "../../framepace.h"
+#include "../../game_sites.h"
 #include "../../imageload.h"
 #include "../../paths.h"
 #include "../../settings.h"
@@ -251,8 +252,11 @@ static void create_device(void) {
     bool uil = false;
 #endif
     // Pipelines linked from shaders compiled apart from the fixed state (exec.c, graphics pipeline libraries), when
-    // the driver links them fast. SAVAGEWIND_VK_NO_GPL=1: whole pipelines, as before.
-    bool gpl = !getenv("SAVAGEWIND_VK_NO_GPL") && !(win_legacy && !getenv("SAVAGEWIND_VK_GPL")) && has_ext(ep, ne, VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME) &&
+    // the driver links them fast. SAVAGEWIND_VK_NO_GPL=1: whole pipelines, as before. Off for game code without
+    // BotW's sites (TOTK): with them, RADV (Steam Deck) hangs the GPU in the first scene after TOTK's intro, always
+    // at the same draw of a 64x64 depth pass (GE, SPI and PA busy); whole pipelines draw it. SAVAGEWIND_VK_GPL=1: on.
+    bool gpl = !getenv("SAVAGEWIND_VK_NO_GPL") && !(win_legacy && !getenv("SAVAGEWIND_VK_GPL")) &&
+               !(!GAME_SITES_KNOWN && !getenv("SAVAGEWIND_VK_GPL")) && has_ext(ep, ne, VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME) &&
                has_ext(ep, ne, VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME);
     // when each frame reached the display (SAVAGEWIND_LOG_PRESENT, tests: "present timing" below)
     bool pwait = getenv("SAVAGEWIND_LOG_PRESENT") && has_ext(ep, ne, VK_KHR_PRESENT_ID_EXTENSION_NAME) &&
