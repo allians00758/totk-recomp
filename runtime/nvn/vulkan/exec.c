@@ -4299,6 +4299,30 @@ static void draw_(CmdRec *r, bool indexed) {
         stat_skipped++;
         return;
     }
+    {   // (debugging GPU hangs) SAVAGEWIND_SKIP_DRAWS=<mask>: draws whose shaders have these traits are skipped -
+        // 1 a loop in the vertex shader, 2 a loop in the fragment shader, 4 global memory in the vertex shader, 8 in
+        // the fragment shader, 16 subgroup operations (vote, ballot, shuffle) in either. Each skipped program is logged
+        // once. Which bit makes a hang go away narrows it down to a few shaders.
+        static int mask = -1;
+        if (mask < 0) mask = getenv("SAVAGEWIND_SKIP_DRAWS") ? atoi(getenv("SAVAGEWIND_SKIP_DRAWS")) : 0;
+        if (mask) {
+            static const Prog *seen[4096];
+            static uint8_t verdict[4096];  // 1 keep, 2 skip
+            unsigned slot = (unsigned)(((uintptr_t)pr >> 4) * 0x9E3779B1u) % 4096u;
+            if (seen[slot] != pr) {
+                const char *v = pr->vi->msl, *f = pr->fi->msl;
+                bool vl = strstr(v, "++loops <") || strstr(v, "guard <"), fl = strstr(f, "++loops <") || strstr(f, "guard <");
+                bool sg = strstr(v, "subgroup") || strstr(f, "subgroup");
+                int traits = (vl ? 1 : 0) | (fl ? 2 : 0) | (pr->vi->uses_gmem ? 4 : 0) | (pr->fi->uses_gmem ? 8 : 0) | (sg ? 16 : 0);
+                seen[slot] = pr;
+                verdict[slot] = traits & mask ? 2 : 1;
+                if (traits & mask)
+                    LOG("[skip] vs %llx fs %llx: traits %#x, skipped\n", (unsigned long long)st.program->stages[0].code_addr,
+                        (unsigned long long)st.program->stages[1].code_addr, traits);
+            }
+            if (verdict[slot] == 2) { stat_skipped++; return; }
+        }
+    }
     {   // fragment-shader hash: skip lists (SAVAGEWIND_SKIP_FSHASH), debug logs, GPU profile labels
         static uint64_t last_fs, last_hash;
         static bool last_skip;
