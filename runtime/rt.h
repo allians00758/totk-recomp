@@ -90,3 +90,6 @@ uint64_t guest_sym(const char *name);     // cached loader_find_symbol, fatal if
 void *hle_alloc(uint64_t size);           // zeroed guest-visible memory (never freed)
 extern const char *g_romfs_dir;
 extern uint64_t g_program_id;     // from main.npdm's ACI0 (runtime/main.c); 0 before boot
+// main.npdm's system resource size (META +0x14; runtime/main.c): the kernel memory the process has for its own page
+// tables. Non-zero turns on the SDK's virtual address memory (nn::os::AllocateAddressRegion: TOTK uses it, BotW not).
+extern uint32_t g_system_resource_size;

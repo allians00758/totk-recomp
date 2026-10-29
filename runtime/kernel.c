@@ -4,6 +4,9 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#ifdef __linux__
+#include <sys/mman.h>
+#endif
 
 #include "hle.h"
 #include "kernel.h"
@@ -270,7 +273,8 @@ static bool kwait(int64_t timeout_ns, const struct timespec *ts) {
 
 // ------------------------------------------------------------------ memory map
 typedef struct { uint64_t addr, size; uint32_t type, perm; } Region;
-static Region regions[1024];
+#define MAX_REGIONS 8192  // (virtual address memory maps and unmaps pages: many pieces, merged where they touch)
+static Region regions[MAX_REGIONS];
 static int nregions;
 static uint64_t heap_size;
 static uint64_t tls_next = TLS_BASE;
@@ -286,7 +290,7 @@ int kernel_data_regions(uint64_t *addr, uint64_t *size, int max) {
 }
 
 static void region_add(uint64_t addr, uint64_t size, uint32_t type, uint32_t perm) {
-    if (nregions == 1024) FATAL("too many regions\n");
+    if (nregions == MAX_REGIONS) FATAL("too many regions\n");
     plat_commit(addr, size);  // back it before the OS writes there (Windows: file reads into the heap)
     int i = nregions++;
     while (i > 0 && regions[i - 1].addr > addr) { regions[i] = regions[i - 1]; i--; }
@@ -301,6 +305,50 @@ static void region_remove(uint64_t addr) {
             return;
         }
     }
+}
+
+// Takes [addr, addr+size) out of every region it overlaps (splitting one that holds it in its middle): what
+// UnmapPhysicalMemory does to any part of what MapPhysicalMemory mapped, and MapPhysicalMemory before mapping.
+static void region_carve(uint64_t addr, uint64_t size) {
+    uint64_t end = addr + size;
+    for (int i = 0; i < nregions; i++) {
+        Region *r = &regions[i];
+        uint64_t rend = r->addr + r->size;
+        if (rend <= addr || r->addr >= end) continue;
+        if (r->addr < addr && rend > end) {  // the range is inside: two pieces
+            Region tail = {end, rend - end, r->type, r->perm};
+            r->size = addr - r->addr;
+            if (nregions == MAX_REGIONS) FATAL("too many regions\n");
+            memmove(&regions[i + 2], &regions[i + 1], (nregions - i - 1) * sizeof(Region));
+            regions[i + 1] = tail;
+            nregions++;
+            return;
+        }
+        if (r->addr < addr) { r->size = addr - r->addr; continue; }  // its end goes
+        if (rend > end) { r->size = rend - end; r->addr = end; continue; }  // its start goes
+        memmove(&regions[i], &regions[i + 1], (nregions - i - 1) * sizeof(Region));  // all of it goes
+        nregions--, i--;
+    }
+}
+
+// Joins neighbouring regions of this type that touch, with the same permissions
+static void region_merge(uint32_t type) {
+    for (int i = 0; i + 1 < nregions; i++) {
+        Region *a = &regions[i], *b = &regions[i + 1];
+        if (a->type != type || b->type != type || a->perm != b->perm || a->addr + a->size != b->addr) continue;
+        a->size += b->size;
+        memmove(&regions[i + 1], &regions[i + 2], (nregions - i - 2) * sizeof(Region));
+        nregions--, i--;
+    }
+}
+
+// Physical memory mapped or unmapped: zeroed. On Linux the pages go back to the host (they read as zero when next
+// touched), so a big map costs nothing until it is used.
+static void phys_zero(uint64_t addr, uint64_t size) {
+#ifdef __linux__
+    if (madvise((void *)(uintptr_t)addr, size, MADV_DONTNEED) == 0) return;
+#endif
+    memset((void *)(uintptr_t)addr, 0, size);
 }
 
 static void query_memory(uint64_t addr, uint64_t out) {
@@ -1054,7 +1102,10 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
         case 13: v = GUEST_HI - GUEST_LO; break;
         case 14: v = STACK_BASE; break;
         case 15: v = STACK_SIZE; break;
-        case 16: case 17: v = 0; break;
+        // SystemResourceSizeTotal / Used (main.npdm): with a size, the SDK's VammManager::InitializeIfEnabled turns on
+        // virtual address memory over the alias region (AllocateAddressRegion + MapPhysicalMemory, as TOTK uses)
+        case 16: v = g_system_resource_size; break;
+        case 17: v = 0; break;
         case 18: v = g_program_id; break;  // ProgramId (main.npdm)
         // UserExceptionContextAddress: a zeroed page at the top of the TLS region. BOTW 1.8.2's
         // nn::os::SetDyingMessageRegion stores its dying-message pointer at +0x1c0 there.
@@ -1066,13 +1117,21 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
         x[1] = v;
         break;
     }
-    case 0x2C:  // MapPhysicalMemory(addr, size)
-        memset((void *)x[0], 0, x[1]);
+    case 0x2C:  // MapPhysicalMemory(addr, size): zeroed memory, merged with mapped neighbours
+        if ((x[0] | x[1]) & 0xFFF || !x[1] || x[0] < ALIAS_BASE || x[0] + x[1] > ALIAS_BASE + ALIAS_SIZE) {
+            LOG("[kernel] MapPhysicalMemory %llx+%llx outside the alias region\n", x[0], x[1]);
+            x[0] = R_INVALID_ADDRESS;
+            break;
+        }
+        phys_zero(x[0], x[1]);
+        region_carve(x[0], x[1]);
         region_add(x[0], x[1], 0x7, 3);
+        region_merge(0x7);
         x[0] = R_OK;
         break;
-    case 0x2D:  // UnmapPhysicalMemory
-        region_remove(x[0]);
+    case 0x2D:  // UnmapPhysicalMemory(addr, size): any part of what was mapped (the SDK frees pages, not whole maps)
+        region_carve(x[0], x[1]);
+        phys_zero(x[0], x[1]);  // (the host memory goes back too)
         x[0] = R_OK;
         break;
     case 0x34: x[0] = svc_wait_for_address(x[0], (uint32_t)x[1], (int32_t)x[2], (int64_t)x[3]); break;
