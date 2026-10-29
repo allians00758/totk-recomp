@@ -345,10 +345,28 @@ static void region_merge(uint32_t type) {
 // Physical memory mapped or unmapped: zeroed. On Linux the pages go back to the host (they read as zero when next
 // touched), so a big map costs nothing until it is used.
 static void phys_zero(uint64_t addr, uint64_t size) {
+    if (!size) return;
 #ifdef __linux__
     if (madvise((void *)(uintptr_t)addr, size, MADV_DONTNEED) == 0) return;
 #endif
     memset((void *)(uintptr_t)addr, 0, size);
+}
+
+// Zeroes the parts of [addr, addr+size) that physical memory is mapped at (mapped) or isn't (!mapped). As the
+// kernel does, MapPhysicalMemory maps only the pages of its range that aren't mapped yet: the ones that are keep
+// their data (the SDK's VammManager maps a growing range piece by piece; zeroing all of it each time wiped what the
+// game had put there, TOTK's shader code in its memory pools among it). UnmapPhysicalMemory frees the mapped ones.
+static void phys_zero_where(uint64_t addr, uint64_t size, bool mapped) {
+    uint64_t end = addr + size, at = addr;  // (regions are sorted by address)
+    for (int i = 0; i < nregions && at < end; i++) {
+        Region *r = &regions[i];
+        if (r->type != 0x7 || r->addr + r->size <= at) continue;
+        if (r->addr >= end) break;
+        uint64_t lo = r->addr > at ? r->addr : at, hi = r->addr + r->size < end ? r->addr + r->size : end;
+        phys_zero(mapped ? lo : at, mapped ? hi - lo : lo - at);
+        at = hi;
+    }
+    if (!mapped && at < end) phys_zero(at, end - at);
 }
 
 static void query_memory(uint64_t addr, uint64_t out) {
@@ -1117,21 +1135,21 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
         x[1] = v;
         break;
     }
-    case 0x2C:  // MapPhysicalMemory(addr, size): zeroed memory, merged with mapped neighbours
+    case 0x2C:  // MapPhysicalMemory(addr, size): zeroed memory where none was mapped, merged with mapped neighbours
         if ((x[0] | x[1]) & 0xFFF || !x[1] || x[0] < ALIAS_BASE || x[0] + x[1] > ALIAS_BASE + ALIAS_SIZE) {
             LOG("[kernel] MapPhysicalMemory %llx+%llx outside the alias region\n", x[0], x[1]);
             x[0] = R_INVALID_ADDRESS;
             break;
         }
-        phys_zero(x[0], x[1]);
+        phys_zero_where(x[0], x[1], false);
         region_carve(x[0], x[1]);
         region_add(x[0], x[1], 0x7, 3);
         region_merge(0x7);
         x[0] = R_OK;
         break;
     case 0x2D:  // UnmapPhysicalMemory(addr, size): any part of what was mapped (the SDK frees pages, not whole maps)
+        phys_zero_where(x[0], x[1], true);  // (the host memory goes back too)
         region_carve(x[0], x[1]);
-        phys_zero(x[0], x[1]);  // (the host memory goes back too)
         x[0] = R_OK;
         break;
     case 0x34: x[0] = svc_wait_for_address(x[0], (uint32_t)x[1], (int32_t)x[2], (int64_t)x[3]); break;
