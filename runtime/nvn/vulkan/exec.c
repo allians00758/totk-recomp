@@ -1316,6 +1316,19 @@ static void apply_scissor(void) {
 
 // Metal convention (y up in NDC, origin top-left) through a negative-height viewport.
 static void set_viewport(float x, float y, float w, float h, float zn, float zf) {
+    // (a NaN or infinite viewport is undefined in Vulkan; RADV derives the clipper's guard band from it, and the GPU
+    // can hang in the clipper with GE, SPI and PA busy - TOTK's hang after its intro. Made finite and logged.)
+    if (!isfinite(x) || !isfinite(y) || !isfinite(w) || !isfinite(h) || !isfinite(zn) || !isfinite(zf) ||
+        fabsf(x) > 32768 || fabsf(y) > 32768 || fabsf(w) > 32768 || fabsf(h) > 32768) {
+        static int told;
+        if (told++ < 16) LOG("[vk] bad viewport %g %g %g %g depth %g-%g: made finite\n", x, y, w, h, zn, zf);
+        if (!isfinite(x) || fabsf(x) > 32768) x = 0;
+        if (!isfinite(y) || fabsf(y) > 32768) y = 0;
+        if (!isfinite(w) || fabsf(w) > 32768) w = 1;
+        if (!isfinite(h) || fabsf(h) > 32768) h = 1;
+        if (!isfinite(zn)) zn = 0;
+        if (!isfinite(zf)) zf = 1;
+    }
     if (w <= 0) w = 1;
     if (h == 0) h = 1;
     VkViewport vp = {x, y + h, w, -h, fminf(fmaxf(zn, 0), 1), fminf(fmaxf(zf, 0), 1)};
@@ -4652,6 +4665,14 @@ have_pipe:
         if (off < 0) off = getenv("SAVAGEWIND_NO_DEPTH_BIAS") != NULL;
         bool on = (st.poly[3] & 4) && !off;
         if (on) memcpy(f, st.poly_offset, sizeof f);
+        for (int i = 0; i < 3; i++)
+            if (!isfinite(f[i])) {  // (undefined in Vulkan, like a NaN viewport: off, logged)
+                static int told;
+                if (told++ < 16) LOG("[vk] bad depth bias %g %g %g: off\n", f[0], f[1], f[2]);
+                f[0] = f[1] = f[2] = 0;
+                on = false;
+                break;
+            }
         if (equal_tol) { f[1] -= 8; on = true; }  // (see the EQUAL comment above: a few depth ulps nearer)
         if (!DYN_SAME(bias_on, (uint32_t)on)) vkCmdSetDepthBiasEnable(cb, on);
         if (memcmp(dc.bias, f, sizeof f)) {

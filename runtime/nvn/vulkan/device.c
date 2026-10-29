@@ -351,7 +351,7 @@ static void create_device(void) {
     b->shaderInt64 = h->shaderInt64;
     b->depthBiasClamp = h->depthBiasClamp;
     b->depthClamp = h->depthClamp;
-    g_vk.depth_clamp = h->depthClamp;
+    g_vk.depth_clamp = h->depthClamp && !getenv("SAVAGEWIND_NO_DEPTH_CLAMP");  // (that one: debugging)
     b->occlusionQueryPrecise = h->occlusionQueryPrecise;
     g_vk.occlusion_precise = h->occlusionQueryPrecise;
     b->largePoints = h->largePoints;
