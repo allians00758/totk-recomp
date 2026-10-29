@@ -4312,7 +4312,10 @@ static void draw_(CmdRec *r, bool indexed) {
             if (seen[slot] != pr) {
                 const char *v = pr->vi->msl, *f = pr->fi->msl;
                 bool vl = strstr(v, "++loops <") || strstr(v, "guard <"), fl = strstr(f, "++loops <") || strstr(f, "guard <");
-                bool sg = strstr(v, "subgroup") || strstr(f, "subgroup");
+                // (calls, not the word: every GLSL header has the subgroup #extension lines)
+                static const char *const sgf[] = {"subgroupBallot(", "subgroupAll(", "subgroupAny(", "subgroupAllEqual(", "subgroupShuffle"};
+                bool sg = false;
+                for (int k = 0; k < 5 && !sg; k++) sg = strstr(v, sgf[k]) || strstr(f, sgf[k]);
                 int traits = (vl ? 1 : 0) | (fl ? 2 : 0) | (pr->vi->uses_gmem ? 4 : 0) | (pr->fi->uses_gmem ? 8 : 0) | (sg ? 16 : 0);
                 seen[slot] = pr;
                 verdict[slot] = traits & mask ? 2 : 1;
