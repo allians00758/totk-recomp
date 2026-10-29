@@ -4771,6 +4771,24 @@ have_pipe:
             stat_skipped++;
             return;
         }
+        // (debugging GPU hangs) SAVAGEWIND_LOG_DRAW_COUNT=<n>[,<n>...]: draws of exactly n vertices or indices are
+        // logged with their shaders (the first 64) - a RADV hang report names the hung draw only by its counts.
+        static uint32_t want[8];
+        static int nwant = -1, told_want;
+        if (nwant < 0) {
+            nwant = 0;
+            const char *e = getenv("SAVAGEWIND_LOG_DRAW_COUNT");
+            while (e && *e && nwant < 8) {
+                char *end;
+                want[nwant++] = (uint32_t)strtoul(e, &end, 10);
+                e = *end == ',' ? end + 1 : NULL;
+            }
+        }
+        for (int i = 0; i < nwant; i++)
+            if (count == want[i] && told_want++ < 64)
+                LOG("[vk] draw of %u: vs %llx fs %llx, mode %u, %s, base %lld, %u instances\n", count,
+                    (unsigned long long)st.program->stages[0].code_addr, (unsigned long long)st.program->stages[1].code_addr,
+                    mode, indexed ? "indexed" : "vertices", (long long)(indexed ? (int32_t)r->x[4] : (int64_t)r->x[1]), n_inst);
         static int told_big;  // (and the big ones drawn: over 1M vertices or 4096 instances, the first 16)
         if ((count > (1u << 20) || n_inst > 4096u) && told_big++ < 16)
             LOG("[vk] big draw: vs %llx fs %llx, mode %u, %s %u, %u instances\n", (unsigned long long)st.program->stages[0].code_addr,
