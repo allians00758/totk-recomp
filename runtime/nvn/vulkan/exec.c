@@ -139,12 +139,16 @@ void vk_wait_seq(uint64_t seq) {
     VkSemaphoreWaitInfo wi = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, .semaphoreCount = 1, .pSemaphores = &g_vk.timeline,
                               .pValues = &seq};
     uint64_t t0 = SDL_GetTicksNS();
-    VkResult r = vkWaitSemaphores(g_vk.dev, &wi, 10ull * 1000000000ull);
+    // Until it's done or the device is lost: going on after a timeout as if the work were done let the CPU read results
+    // the GPU hadn't written yet (with a slow GPU - RADV_DEBUG=hang, SAVAGEWIND_SYNC_SUBMIT - the game then met
+    // resources half loaded). A hang ends in VK_ERROR_DEVICE_LOST when the kernel resets the GPU.
+    VkResult r;
+    for (int tries = 1; (r = vkWaitSemaphores(g_vk.dev, &wi, 10ull * 1000000000ull)) == VK_TIMEOUT; tries++)
+        LOG("[vk] GPU still on submission %llu after %d s\n", (unsigned long long)seq, tries * 10);
     stat_wait_ns += SDL_GetTicksNS() - t0;
     cum_wait += SDL_GetTicksNS() - t0;
     if (in_execute) cum_xwait += SDL_GetTicksNS() - t0;
-    if (r == VK_TIMEOUT) LOG("[vk] GPU did not finish submission %llu within 10 s (device lost?)\n", (unsigned long long)seq);
-    else if (r != VK_SUCCESS) {
+    if (r != VK_SUCCESS) {
         extern void vk_devlost_dump(void);
         vk_devlost_dump();
         vk_device_fault_report();
@@ -4298,6 +4302,26 @@ static void draw_(CmdRec *r, bool indexed) {
             vk_trace_event(st.rt.color[0], 2, NULL, 0, "draw skipped: program %s", pr ? "not compiled yet" : "missing");
         stat_skipped++;
         return;
+    }
+    {   // (debugging GPU hangs) SAVAGEWIND_SKIP_VS=<lo>-<hi>[,...] (hex): draws whose vertex shader code is in one of
+        // these address ranges are skipped - halving the range a hang still happens in finds its draw.
+        static struct { uint64_t lo, hi; } rg[8];
+        static int nrg = -1;
+        if (nrg < 0) {
+            nrg = 0;
+            const char *e = getenv("SAVAGEWIND_SKIP_VS");
+            while (e && *e && nrg < 8) {
+                char *end;
+                rg[nrg].lo = strtoull(e, &end, 16);
+                rg[nrg].hi = *end == '-' ? strtoull(end + 1, &end, 16) : rg[nrg].lo;
+                nrg++;
+                e = *end == ',' ? end + 1 : NULL;
+            }
+            for (int i = 0; i < nrg; i++) LOG("[skip] vertex shaders %llx-%llx skipped\n", (unsigned long long)rg[i].lo, (unsigned long long)rg[i].hi);
+        }
+        uint64_t vsa = st.program->stages[0].code_addr;
+        for (int i = 0; i < nrg; i++)
+            if (vsa >= rg[i].lo && vsa <= rg[i].hi) { stat_skipped++; return; }
     }
     {   // (debugging GPU hangs) SAVAGEWIND_SKIP_DRAWS=<mask>: draws whose shaders have these traits are skipped -
         // 1 a loop in the vertex shader, 2 a loop in the fragment shader, 4 global memory in the vertex shader, 8 in
