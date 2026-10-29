@@ -82,6 +82,7 @@ class Module:
         self.fdes = sorted((base + a, base + b) for a, b in eh_frame_extents(n) if b > a)
         self.fde_starts = [a for a, _ in self.fdes]
         self.jt_cache = {}
+        self.own_cache = {}  # (own_code_addrs, by eh_frame function)
         self.setjmps = self.setjmp_targets()
         self.sites, self.patches = {}, {}  # (main: tools/game_sites.py, tools/patches.py)
 
@@ -97,6 +98,35 @@ class Module:
 
     def word(self, a):
         return self.words[(a - self.lo) // 4]
+
+    def own_code_addrs(self, a):
+        """Code addresses inside the eh_frame function holding a that it materializes itself (ADR, or ADRP and a
+        close ADD on the same register): the targets of a computed `br` there that isn't a jump table. TOTK's zstd
+        sequence decoder keeps its loop's resume point in x19 (adr x19, label ... br x19), with branches in
+        between that computed_target doesn't follow."""
+        f = self.fde(a)
+        if f is None:
+            return []
+        if f not in self.own_cache:
+            lo, hi = f
+            out, adrp = set(), {}
+            for pc in range(lo, hi, 4):
+                w = self.word(pc)
+                if (w & 0x9F000000) == 0x10000000:  # ADR
+                    imm = sext(((w >> 5) & 0x7FFFF) << 2 | ((w >> 29) & 3), 21)
+                    if lo <= pc + imm < hi:
+                        out.add(pc + imm)
+                elif (w & 0x9F000000) == 0x90000000:  # ADRP
+                    imm = sext(((w >> 5) & 0x7FFFF) << 2 | ((w >> 29) & 3), 21)
+                    adrp[w & 31] = ((pc & ~0xFFF) + (imm << 12), pc)
+                elif (w & 0xFFC00000) == 0x91000000:  # ADD (imm, 64-bit, no shift)
+                    rn = (w >> 5) & 31
+                    if rn in adrp and pc - adrp[rn][1] <= 32:
+                        t = adrp[rn][0] + ((w >> 10) & 0xFFF)
+                        if lo <= t < hi:
+                            out.add(t)
+            self.own_cache[f] = sorted(t for t in out if t % 4 == 0)
+        return self.own_cache[f]
 
     def setjmp_targets(self):
         """Addresses whose call is a call to setjmp: the function itself (a module defining it) and the PLT stubs
@@ -372,6 +402,12 @@ class Module:
                     tables[a] = jt
                     # (a target outside this piece of a split function is a boundary, reached by a tail call)
                     for t in jt:
+                        (labels if entry <= t < end else ext).add(t)
+                elif self.own_code_addrs(a):
+                    # not a table: one of the addresses the function takes of itself (a miss goes on in the
+                    # all-instruction copy, as a table's would)
+                    tables[a] = self.own_code_addrs(a)
+                    for t in tables[a]:
                         (labels if entry <= t < end else ext).add(t)
                 elif self.computed_target(a, (self.fde(a) or (entry,))[0]):
                     # unresolved table jump: allow jumping to any instruction of the function
