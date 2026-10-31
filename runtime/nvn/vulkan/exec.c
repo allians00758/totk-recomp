@@ -5011,6 +5011,84 @@ have_pipe:
 
 static void debug_save_channels(TexBackend *b, const char *path);
 
+static float dbg_half(uint16_t h) {
+    uint32_t s = (uint32_t)(h >> 15) << 31, e = (h >> 10) & 0x1F, m = h & 0x3FF, u;
+    if (e == 0) { float f = (float)m / 16777216.0f; return s ? -f : f; }
+    if (e == 31) u = s | 0x7F800000u | (m << 13);
+    else u = s | ((e + 112) << 23) | (m << 13);
+    float f;
+    memcpy(&f, &u, 4);
+    return f;
+}
+
+// (debug frame) Skinning on the CPU, as TotK's skinned vertex shaders do it: position a0 (RGBA16F), weights a4 (RGBA8
+// unorm) or one bone (a6 R8UI), bone indices a6, and vertex-stage cbuf 5 holding 3x4 row-major matrices 48 bytes
+// apart. Logs how far the skinned vertices spread and how many lean on a bone past the bound palette: a draw that
+// stretches triangles across the scene shows here with its shaders.
+static void skin_check(Prog *pr, CmdRec *r, bool indexed) {
+    if (!((pr->vi->attr_mask >> 0) & 1) || !((pr->vi->attr_mask >> 6) & 1) || !((pr->vi->cbuf_mask >> 5) & 1)) return;
+    if (st.nattrib < 7) return;
+    uint32_t f0 = st.attrib[0] & 0xFF, f6 = st.attrib[6] & 0xFF, f4 = st.nattrib > 4 && ((pr->vi->attr_mask >> 4) & 1) ? st.attrib[4] & 0xFF : 0;
+    if (f0 != 0x29 || (f6 != 0x27 && f6 != 0x03) || (f6 == 0x27 && f4 != 0x25)) return;
+    Range pal = st.ubuf[0][2];
+    if (!pal.addr || !pal.size) return;
+    const float *m = (const float *)(uintptr_t)pal.addr;
+    uint32_t nmat = (uint32_t)(pal.size / 48);
+    float lo[3] = {1e30f, 1e30f, 1e30f}, hi[3] = {-1e30f, -1e30f, -1e30f}, sum[3] = {0};
+    uint64_t nv = 0, oob = 0, wbad = 0, nonfin = 0;
+    static float pos[65536][3];
+    for (uint64_t k = 0; k < r->x[2] && nv < 65536; k++) {
+        uint64_t v = indexed ? (r->x[1] == 0 ? ((const uint8_t *)(uintptr_t)r->x[3])[k] : r->x[1] == 1 ? ((const uint16_t *)(uintptr_t)r->x[3])[k]
+                                                                                         : ((const uint32_t *)(uintptr_t)r->x[3])[k]) + (int32_t)r->x[4]
+                             : r->x[1] + k;
+        const uint8_t *at[3];
+        int ai[3] = {0, 6, 4};
+        bool ok = true;
+        for (int q = 0; q < 3 && ok; q++) {
+            if (q == 2 && f6 != 0x27) { at[q] = NULL; continue; }
+            uint32_t a = (uint32_t)ai[q], s = (st.attrib[a] >> 8) & 0x1F, off = st.attrib[a] >> 13;
+            if (s >= 16 || !st.vbuf[s].addr) { ok = false; break; }
+            uint64_t o = v * st.stream[s][0] + off;
+            if (o + 8 > st.vbuf[s].size + 4) { ok = false; break; }
+            at[q] = (const uint8_t *)(uintptr_t)(st.vbuf[s].addr + o);
+        }
+        if (!ok) continue;
+        uint16_t hp[3];
+        memcpy(hp, at[0], 6);
+        float p[3] = {dbg_half(hp[0]), dbg_half(hp[1]), dbg_half(hp[2])}, out[3] = {0}, wsum = 0;
+        int nb = f6 == 0x27 ? 4 : 1;
+        for (int b = 0; b < nb; b++) {
+            float w = nb == 1 ? 1.0f : at[2][b] / 255.0f;
+            if (w == 0) continue;
+            wsum += w;
+            uint32_t idx = at[1][b];
+            if (idx >= nmat) { oob++; continue; }
+            const float *mm = m + idx * 12;
+            for (int c = 0; c < 3; c++) out[c] += w * (mm[4 * c] * p[0] + mm[4 * c + 1] * p[1] + mm[4 * c + 2] * p[2] + mm[4 * c + 3]);
+        }
+        if (fabsf(wsum - 1.0f) > 0.02f) wbad++;
+        if (!isfinite(out[0]) || !isfinite(out[1]) || !isfinite(out[2])) { nonfin++; continue; }
+        for (int c = 0; c < 3; c++) {
+            if (out[c] < lo[c]) lo[c] = out[c];
+            if (out[c] > hi[c]) hi[c] = out[c];
+            sum[c] += out[c];
+            pos[nv][c] = out[c];
+        }
+        nv++;
+    }
+    if (!nv) return;
+    float cen[3] = {sum[0] / nv, sum[1] / nv, sum[2] / nv};
+    uint64_t far = 0;
+    for (uint64_t i = 0; i < nv; i++) {
+        float dx = pos[i][0] - cen[0], dy = pos[i][1] - cen[1], dz = pos[i][2] - cen[2];
+        if (dx * dx + dy * dy + dz * dz > 9.0f) far++;
+    }
+    LOG("[skin] vs %llx fs %016llx: %llu vertices, box %.2f %.2f %.2f .. %.2f %.2f %.2f, %llu over 3 m from the centre, %llu on bones past the "
+        "palette (%u), %llu weights not summing to 1, %llu non-finite\n", (unsigned long long)st.program->stages[0].code_addr,
+        (unsigned long long)g_cur_fs_hash, (unsigned long long)nv, lo[0], lo[1], lo[2], hi[0], hi[1], hi[2], (unsigned long long)far,
+        (unsigned long long)oob, nmat, (unsigned long long)wbad, (unsigned long long)nonfin);
+}
+
 static void debug_draw(Prog *pr, CmdRec *r, bool indexed) {
     LOG("[draw] %s inst %llu mode %llu count %llu prog vs=%llx fs=%llx | vs cb %#x fs cb %#x | rt %d", indexed ? "e" : "a",
         (unsigned long long)(indexed ? r->x[6] : r->x[4]), (unsigned long long)r->x[0], (unsigned long long)r->x[2],
@@ -5057,6 +5135,7 @@ static void debug_draw(Prog *pr, CmdRec *r, bool indexed) {
             fmt, mx[0], mx[1], mx[2], mx[3], (unsigned long long)nv, (unsigned long long)out, (unsigned long long)st.ubuf[0][2].addr,
             (unsigned long long)st.ubuf[0][2].size, (unsigned long long)(st.ubuf[0][2].size / 48));
     }
+    skin_check(pr, r, indexed);
     if (getenv("SAVAGEWIND_DEBUG_DATA")) {  // vertex streams 0-1 and fragment cbufs: the first floats
         for (int s = 0; s < 2; s++) {
             if (!st.vbuf[s].addr) continue;
