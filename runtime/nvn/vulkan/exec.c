@@ -5364,7 +5364,20 @@ static void copy_texture(const TexRefRec *src, const TexRefRec *dst, uint64_t fl
     uint32_t dlv = dst->has_view && (dst->view.setmask & 1) ? dst->view.base_level : 0;
     uint32_t sly = src->has_view && (src->view.setmask & 2) ? src->view.min_layer : 0;
     uint32_t dly = dst->has_view && (dst->view.setmask & 2) ? dst->view.min_layer : 0;
+    // The region's z is the layer of an array (as in nvnTextureWriteTexels), its depth the layer count. Ignored, every
+    // copy went to the first layer: TOTK streams its terrain into 121-layer ASTC arrays a layer at a time this way, so
+    // layer 0 held the last one copied and layers 1+ stayed empty - zero ASTC blocks, magenta (the whole scene was
+    // tinted through the lighting). 3D textures: z and depth are slices.
+    bool sarr = s->layers > 1 && s->depth == 1, darr = d->layers > 1 && d->depth == 1;
+    uint32_t nl = 1;
+    if (sarr && sr[2] > 0) sly += (uint32_t)sr[2];
+    if (darr && dr[2] > 0) dly += (uint32_t)dr[2];
+    if ((sarr || darr) && dr[5] > 1) nl = (uint32_t)dr[5];
     if (slv >= s->levels || dlv >= d->levels || sly >= s->layers || dly >= d->layers) return;
+    if (sly + nl > s->layers) nl = s->layers - sly;
+    if (dly + nl > d->layers) nl = d->layers - dly;
+    int32_t sz0 = !sarr && s->depth > 1 ? sr[2] : 0, dz0 = !darr && d->depth > 1 ? dr[2] : 0;
+    uint32_t nz = !sarr && !darr && s->depth > 1 && d->depth > 1 && dr[5] > 1 ? (uint32_t)dr[5] : 1;
     {   // whole-image regions are the level's extent, and every region stays inside its level: scaled allocations
         // (internal resolution below 1x) round guest regions past the edge, and out-of-bounds copies / blits are
         // undefined in Vulkan (garbage that changed every frame on NVIDIA: flicker in the depth pyramid's users)
@@ -5396,18 +5409,18 @@ static void copy_texture(const TexRefRec *src, const TexRefRec *dst, uint64_t fl
     }
     if (s->samples != d->samples) return;
     if (sw == dw && sh == dh && s->format == d->format) {
-        VkImageCopy c = {.srcSubresource = {sa, slv, sly, 1}, .srcOffset = {sx0, sy0, 0}, .dstSubresource = {da, dlv, dly, 1},
-                         .dstOffset = {dx0, dy0, 0}, .extent = {(uint32_t)sw, (uint32_t)sh, 1}};
+        VkImageCopy c = {.srcSubresource = {sa, slv, sly, nl}, .srcOffset = {sx0, sy0, sz0}, .dstSubresource = {da, dlv, dly, nl},
+                         .dstOffset = {dx0, dy0, dz0}, .extent = {(uint32_t)sw, (uint32_t)sh, nz}};
         vkCmdCopyImage(cb, s->image, VK_IMAGE_LAYOUT_GENERAL, d->image, VK_IMAGE_LAYOUT_GENERAL, 1, &c);
         return;
     }
     // scaled / converting copy: the game builds its depth pyramid this way (nearest), colour copies filter if asked
     bool depth = (sa | da) & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
     if (depth && s->format != d->format) return;
-    VkImageBlit bl = {.srcSubresource = {depth ? (sa & VK_IMAGE_ASPECT_DEPTH_BIT ? VK_IMAGE_ASPECT_DEPTH_BIT : sa) : sa, slv, sly, 1},
-                      .srcOffsets = {{sx0, sy0, 0}, {sx0 + sw, sy0 + sh, 1}},
-                      .dstSubresource = {depth ? (da & VK_IMAGE_ASPECT_DEPTH_BIT ? VK_IMAGE_ASPECT_DEPTH_BIT : da) : da, dlv, dly, 1},
-                      .dstOffsets = {{dx0, dy0, 0}, {dx0 + dw, dy0 + dh, 1}}};
+    VkImageBlit bl = {.srcSubresource = {depth ? (sa & VK_IMAGE_ASPECT_DEPTH_BIT ? VK_IMAGE_ASPECT_DEPTH_BIT : sa) : sa, slv, sly, nl},
+                      .srcOffsets = {{sx0, sy0, sz0}, {sx0 + sw, sy0 + sh, sz0 + (int32_t)nz}},
+                      .dstSubresource = {depth ? (da & VK_IMAGE_ASPECT_DEPTH_BIT ? VK_IMAGE_ASPECT_DEPTH_BIT : da) : da, dlv, dly, nl},
+                      .dstOffsets = {{dx0, dy0, dz0}, {dx0 + dw, dy0 + dh, dz0 + (int32_t)nz}}};
     bool linear = (flags & 1) && !depth && !rt_kind(st_->format);
     dl_note("  blit %p lv%u/%u %ux%u (%d,%d %dx%d) -> %p lv%u/%u %ux%u (%d,%d %dx%d) %s", (void *)s->image, slv, s->levels, s->width,
             s->height, sx0, sy0, sw, sh, (void *)d->image, dlv, d->levels, d->width, d->height, dx0, dy0, dw, dh, linear ? "linear" : "nearest");
