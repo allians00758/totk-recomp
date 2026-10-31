@@ -532,6 +532,7 @@ static uint8_t fp16_unorm8(int h) {
 
 // Error colour (astc.h astc_error_rgba): magenta, as astcenc; the renderer sets transparent black.
 uint8_t astc_error_rgba[4] = {0xFF, 0x00, 0xFF, 0xFF};
+uint64_t astc_stat_error, astc_stat_zero;  // blocks astc_decode_ldr could not decode, and how many of them were all zero
 
 static void fill_error(uint8_t *out, int texels) {
     for (int i = 0; i < texels; i++) memcpy(out + 4 * i, astc_error_rgba, 4);
@@ -692,7 +693,11 @@ void astc_decode_ldr(const uint8_t *blocks, uint32_t width, uint32_t height, uin
             uint32_t cw = width - x0 < bw ? width - x0 : bw, ch = height - y0 < bh ? height - y0 : bh;
             // decode in place when the block's rows are contiguous in the output
             uint8_t *dst = width == bw && ch == bh ? rgba_out + (size_t)y0 * width * 4 : tmp;
-            astc_decode_block(src, bw, bh, srgb, dst);
+            if (!astc_decode_block(src, bw, bh, srgb, dst)) {
+                astc_stat_error++;
+                static const uint8_t z[16];
+                if (!memcmp(src, z, 16)) astc_stat_zero++;
+            }
             if (dst == tmp) {
                 for (uint32_t y = 0; y < ch; y++)
                     memcpy(rgba_out + ((size_t)(y0 + y) * width + x0) * 4, tmp + y * bw * 4, cw * 4);

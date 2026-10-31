@@ -841,7 +841,19 @@ static void upload_layers(NvnTexture *t, TexBackend *b, uint32_t level_mask, uin
                 if (linear) for (uint32_t y = 0; y < l.hb; y++) memcpy(blocks + (uint64_t)y * l.wb * 16, src + (uint64_t)y * t->stride, l.wb * 16);
                 else tegra_deswizzle(src, blocks, l.wb, l.hb, 1, 16, l.block_height_log2, l.block_depth_log2);
                 VkSpan s = vk_transient((uint64_t)l.w * l.h * 4, 16);
+                uint64_t e0 = astc_stat_error, z0 = astc_stat_zero;
                 astc_decode_ldr(blocks, l.w, l.h, b->astc_bw, b->astc_bh, b->astc_srgb, s.ptr);
+                if (astc_stat_error != e0 && lv == 0) {  // (black or magenta texels: say which texture and why)
+                    static int nlog;
+                    uint64_t nb = (uint64_t)((l.w + b->astc_bw - 1) / b->astc_bw) * ((l.h + b->astc_bh - 1) / b->astc_bh);
+                    extern bool g_debug_frame;
+                    if (nlog < 40 || g_debug_frame) {
+                        nlog++;
+                        LOG("[vk] ASTC %ux%u (%ux%u blocks%s) at %llx layer %u: %llu of %llu blocks undecodable, %llu of them all zero\n",
+                            l.w, l.h, b->astc_bw, b->astc_bh, b->astc_srgb ? ", sRGB" : "", (unsigned long long)t->addr, layer,
+                            (unsigned long long)(astc_stat_error - e0), (unsigned long long)nb, (unsigned long long)(astc_stat_zero - z0));
+                    }
+                }
                 free(blocks);
                 VkBufferImageCopy rg = {.bufferOffset = s.off, .bufferRowLength = l.w, .bufferImageHeight = l.h,
                                         .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, lv, layer, 1},
