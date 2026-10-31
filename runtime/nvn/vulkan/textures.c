@@ -1010,7 +1010,9 @@ void vk_trace_dump(NvnTexture *t) {
 // lighting, which samples the terrain). Here a few layers are hashed each frame in turn (4 MB a frame) and a changed
 // layer is uploaded alone.
 static void layer_scan(NvnTexture *t, TexBackend *b) {
-    if (!b->nlayer_hash || !b->layer_hash || b->gpu_owned || !t->addr) return;
+    static int off = -1;  // SAVAGEWIND_NO_LAYER_SCAN=1: not done (A/B tests)
+    if (off < 0) off = getenv("SAVAGEWIND_NO_LAYER_SCAN") != NULL;
+    if (off || !b->nlayer_hash || !b->layer_hash || b->gpu_owned || !t->addr) return;
     uint32_t layers = t->layout.layers ? t->layout.layers : 1;
     if (layers != b->nlayer_hash || nvn_texture_flags_pitch(t->flags)) return;
     uint64_t layer_size = tegra_layer_size(&t->layout);
