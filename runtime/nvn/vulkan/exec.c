@@ -5036,6 +5036,27 @@ static void debug_draw(Prog *pr, CmdRec *r, bool indexed) {
             LOG("[draw]   rt%d view: set %#x levels %u+%u layers %u+%u (texture target %u depth %u)\n", i, st.rt.cview[i].setmask,
                 st.rt.cview[i].base_level, st.rt.cview[i].num_levels, st.rt.cview[i].min_layer, st.rt.cview[i].num_layers,
                 st.rt.color[i]->target, st.rt.color[i]->depth);
+    for (int a = 0; a < 16 && a < st.nattrib; a++) {  // 8-bit integer inputs (bone indices): largest value each draw uses
+        if (!((pr->vi->attr_mask >> a) & 1)) continue;
+        uint32_t fmt = st.attrib[a] & 0xFF, s = (st.attrib[a] >> 8) & 0x1F, off = st.attrib[a] >> 13;
+        int nc = fmt == 0x27 ? 4 : fmt == 0x0F ? 2 : fmt == 0x03 ? 1 : 0;
+        if (!nc || s >= 16 || !st.vbuf[s].addr || !st.stream[s][0]) continue;
+        uint8_t mx[4] = {0};
+        uint64_t nv = 0, out = 0;
+        for (uint64_t k = 0; k < r->x[2]; k++) {
+            uint64_t v = indexed ? (r->x[1] == 0 ? ((const uint8_t *)(uintptr_t)r->x[3])[k] : r->x[1] == 1 ? ((const uint16_t *)(uintptr_t)r->x[3])[k]
+                                                                                             : ((const uint32_t *)(uintptr_t)r->x[3])[k]) + (int32_t)r->x[4]
+                                 : r->x[1] + k;
+            uint64_t at = v * st.stream[s][0] + off;
+            if (at + nc > st.vbuf[s].size) { out++; continue; }
+            const uint8_t *p = (const uint8_t *)(uintptr_t)(st.vbuf[s].addr + at);
+            for (int c = 0; c < nc; c++) if (p[c] > mx[c]) mx[c] = p[c];
+            nv++;
+        }
+        LOG("[draw]   a%d (format %#x) largest %u %u %u %u over %llu vertices (%llu past the buffer); vs cb5 %llx+%llx = %llu matrices\n", a,
+            fmt, mx[0], mx[1], mx[2], mx[3], (unsigned long long)nv, (unsigned long long)out, (unsigned long long)st.ubuf[0][2].addr,
+            (unsigned long long)st.ubuf[0][2].size, (unsigned long long)(st.ubuf[0][2].size / 48));
+    }
     if (getenv("SAVAGEWIND_DEBUG_DATA")) {  // vertex streams 0-1 and fragment cbufs: the first floats
         for (int s = 0; s < 2; s++) {
             if (!st.vbuf[s].addr) continue;
