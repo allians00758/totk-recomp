@@ -662,6 +662,7 @@ static struct {
     bool prim_restart;
     uint32_t restart_index;
     bool depth_clamp;
+    bool rast_discard;  // nvnCommandBufferSetRasterizerDiscard
     uint64_t copy_row_stride, copy_image_stride;
 } st;
 
@@ -4317,6 +4318,10 @@ static void draw_(CmdRec *r, bool indexed) {
         stat_skipped++;
         return;
     }
+    // Rasterizer discard (TOTK turns it on): nothing reaches the rasterizer, so a draw only matters for what its
+    // vertex shader stores to memory. Ignored, those draws rendered into whatever targets were bound. Draws whose
+    // vertex shader stores to memory still run (rasterized, as before); the others are skipped.
+    if (st.rast_discard && !pr->vi->writes_gmem) { stat_skipped++; return; }
     {   // (debugging GPU hangs) SAVAGEWIND_SKIP_VS=<lo>-<hi>[,...] (hex): draws whose vertex shader code is in one of
         // these address ranges are skipped - halving the range a hang still happens in finds its draw.
         static struct { uint64_t lo, hi; } rg[8];
@@ -6108,6 +6113,7 @@ static void exec_list(uint64_t handle, int depth) {
             st.depth_clamp = r->x[0] != 0 && !off;
             break;
         }
+        case CMD_SET_RASTERIZER_DISCARD: st.rast_discard = r->x[0] != 0; break;
         case CMD_SET_POLYGON_OFFSET: memcpy(st.poly_offset, r->f, sizeof st.poly_offset); break;
         case CMD_SET_PRIMITIVE_RESTART: st.prim_restart = r->x[0] != 0; st.restart_index = (uint32_t)r->x[1]; break;
         case CMD_SET_COPY_STRIDES: st.copy_row_stride = r->x[0]; st.copy_image_stride = r->x[1]; break;
