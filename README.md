@@ -72,5 +72,6 @@ TOTK Recomp построен на [Savage Wind Recomp](https://github.com/Revive
 
 ## Лицензия
 
-MIT, как у Savage Wind и LAS Recomp: см. [LICENSE](LICENSE). *The Legend of Zelda* и *Tears of the Kingdom* —
-товарные знаки Nintendo. Это фанатский проект, не связанный с Nintendo и не одобренный ею.
+GPL-3.0-or-later (с 31 октября 2026; до этого — MIT, как у Savage Wind и LAS Recomp): см. [LICENSE](LICENSE) и
+[NOTICE.md](NOTICE.md), где перечислен код под MIT, на котором построен проект. *The Legend of Zelda* и
+*Tears of the Kingdom* — товарные знаки Nintendo. Это фанатский проект, не связанный с Nintendo и не одобренный ею.
