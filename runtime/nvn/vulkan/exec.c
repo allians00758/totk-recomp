@@ -6024,8 +6024,26 @@ static void exec_list(uint64_t handle, int depth) {
             }
             break;
         case CMD_BIND_STORAGE_BUFFERS:
-            for (uint64_t i = 0; i < r->x[2] && r->x[1] + i < 16 && r->x[0] < 6; i++)
+            for (uint64_t i = 0; i < r->x[2] && r->x[1] + i < 16 && r->x[0] < 6; i++) {
                 memcpy(&st.sbuf[r->x[0]][r->x[1] + i], (uint8_t *)x + i * 16, 16);
+                // Shader global memory is the heap only (gmem_buf at HEAP_BASE): a storage buffer elsewhere (TOTK's
+                // pools in the alias region) reads as zero and its stores are lost. Logged, the first 32 addresses.
+                uint64_t sa, ss;
+                memcpy(&sa, (uint8_t *)x + i * 16, 8);
+                memcpy(&ss, (uint8_t *)x + i * 16 + 8, 8);
+                if (sa && (sa < HEAP_BASE || sa + ss > HEAP_BASE + gmem_size)) {
+                    static uint64_t seen[32];
+                    static int nseen;
+                    bool known = false;
+                    for (int k = 0; k < nseen; k++) known |= seen[k] == sa;
+                    if (!known && nseen < 32) {
+                        seen[nseen++] = sa;
+                        LOG("[vk] storage buffer outside shader global memory: stage %llu slot %llu at %llx size %llx\n",
+                            (unsigned long long)r->x[0], (unsigned long long)(r->x[1] + i), (unsigned long long)sa,
+                            (unsigned long long)ss);
+                    }
+                }
+            }
             break;
         case CMD_BIND_TEXTURES:
             for (uint64_t i = 0; i < r->x[2] && r->x[1] + i < 32 && r->x[0] < 6; i++)
