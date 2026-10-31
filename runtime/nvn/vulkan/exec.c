@@ -3074,7 +3074,20 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
     if (size > r.size && r.size) size = r.size;
     if (size < 16) size = 16;
     VkDescriptorBufferInfo direct;
-    if (gw_ubo_direct(r.addr, size, &direct)) return direct;  // (written by a storing shader: read in place, see gw_note)
+    bool is_direct = gw_ubo_direct(r.addr, size, &direct);
+    if (g_debug_frame && (si->cbuf_dynamic & (1u << k))) {  // (a bone palette and the like: sane at record time?)
+        const float *f = (const float *)(uintptr_t)r.addr;
+        unsigned bad = 0, huge = 0, zero = 0, nf = (unsigned)(size / 4);
+        for (unsigned i = 0; i < nf; i++) {
+            if (!isfinite(f[i])) bad++;
+            else if (fabsf(f[i]) > 1e5f) huge++;
+            else if (f[i] == 0) zero++;
+        }
+        LOG("[draw]   stage %d cb%d dynamic: %llx+%llx (bound %llu, %s): %u words, %u non-finite, %u > 1e5, %u zero\n", stage,
+            idx, (unsigned long long)r.addr, (unsigned long long)r.size, (unsigned long long)size,
+            is_direct ? "in place, GPU-written" : "CPU copy", nf, bad, huge, zero);
+    }
+    if (is_direct) return direct;  // (written by a storing shader: read in place, see gw_note)
     if (stage == 1 && sdw_fix.s > 1 && sdw_patch(r.addr, size, &direct)) return direct;  // (texel size: see sdw_fix)
     if (stage == 0 && k == 3 && hud_patch(r.addr, size, &direct)) return direct;  // (a 16:9 HUD layer: see hud_patch)
     // snapshot: later CPU writes must not leak in. Shared by the draws of one submission binding the same range:

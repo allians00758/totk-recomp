@@ -1220,6 +1220,18 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
         // The immediate is a signed 16-bit offset added to the register (Ryujinx: Imm16ToSInt(op.CbufOffset)):
         // TotK's skinning reads its bone palette as c[5][r - 32], which unsigned became r + 65504 and clamped.
         int64_t off = dyn ? (int64_t)(int16_t)bits(w, 20, 16) : (int64_t)bits(w, 20, 16);
+        if (sz < 4) {  // U8 / S8 / U16 / S16: the byte or halfword at the address, from its word
+            char cb[256], ex[512], sh[300];
+            cbuf_ref(c, idx, dyn ? off : (off & ~3ll), dyn, cb);  // (cbr drops the low two bits itself)
+            if (dyn && off < 0) sprintf(sh, "((((%s) - %lldu) & 3u) * 8u)", dyn, -(long long)off);
+            else if (dyn) sprintf(sh, "((((%s) + %lldu) & 3u) * 8u)", dyn, (long long)off);
+            else sprintf(sh, "%du", (int)(off & 3) * 8);
+            int width = sz < 2 ? 8 : 16;
+            if (sz & 1) sprintf(ex, "uint(bitfieldExtract(int(%s), int(%s), %d))", cb, sh, width);
+            else sprintf(ex, "bitfieldExtract(%s, int(%s), %d)", cb, sh, width);
+            if (dyn) c->info->cbuf_size[idx] = 0x10000;
+            set_reg(c, d, ex);
+        } else
         for (int i = 0; i < n; i++) {
             char cb[256];
             cbuf_ref(c, idx, off + 4 * i, dyn, cb);
