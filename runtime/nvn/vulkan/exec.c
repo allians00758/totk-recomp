@@ -5222,6 +5222,13 @@ static void copy_buffer_to_texture(uint64_t src, const TexRefRec *dst) {
                 level, rg[0], rg[1], rg[2], rg[3], rg[4], rg[5], dst->has_view ? dst->view.setmask : 0,
                 dst->has_view ? dst->view.min_layer : 0);
     }
+    if (t->layout.layers >= 8) {  // (diagnostics: copies into big arrays - TOTK's terrain)
+        static int n;
+        if (n++ < 48)
+            LOG("[copy] buffer %llx -> array #%llu %ux%u x%u f%#x level %d region %d,%d,%d %dx%dx%d view %#x layer %u\n",
+                (unsigned long long)src, (unsigned long long)t->debug_id, t->width, t->height, t->layout.layers, t->format, level,
+                rg[0], rg[1], rg[2], rg[3], rg[4], rg[5], dst->has_view ? dst->view.setmask : 0, dst->has_view ? dst->view.min_layer : 0);
+    }
     if (b->aspect == (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) return;
     if (b->astc_bw) {  // (blocks would need the CPU decode: not seen in the game yet)
         static int nlog;
@@ -5329,6 +5336,16 @@ static void copy_texture(const TexRefRec *src, const TexRefRec *dst, uint64_t fl
     dl_note("copy texture %ux%u f%#x -> %ux%u f%#x (%p -> %p)", st_->width, st_->height, st_->format, dt->width, dt->height,
             dt->format, (void *)st_, (void *)dt);
     TexBackend *s = vk_tex(st_, false), *d = vk_tex(dt, true);
+    if (dt->layout.layers >= 8 || st_->layout.layers >= 8) {  // (diagnostics: copies with big arrays - TOTK's terrain)
+        static int n;
+        if (n++ < 48)
+            LOG("[copy] tex #%llu %ux%u x%u f%#x (%d,%d,%d %dx%dx%d) view %#x/%u -> #%llu %ux%u x%u f%#x (%d,%d,%d %dx%dx%d) view %#x/%u/%u\n",
+                (unsigned long long)st_->debug_id, st_->width, st_->height, st_->layout.layers, st_->format, src->region[0],
+                src->region[1], src->region[2], src->region[3], src->region[4], src->region[5], src->has_view ? src->view.setmask : 0,
+                src->view.min_layer, (unsigned long long)dt->debug_id, dt->width, dt->height, dt->layout.layers, dt->format,
+                dst->region[0], dst->region[1], dst->region[2], dst->region[3], dst->region[4], dst->region[5],
+                dst->has_view ? dst->view.setmask : 0, dst->view.base_level, dst->view.min_layer);
+    }
     if (getenv("SAVAGEWIND_LOG_COPIES")) {  // (debugging)
         static int n;
         if (n++ < 300)

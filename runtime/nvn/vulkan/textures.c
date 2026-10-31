@@ -813,7 +813,9 @@ static void upload_layers(NvnTexture *t, TexBackend *b, uint32_t level_mask, uin
                 (unsigned long long)vk_frame_counter());
         }
     }
-    if (layer0 == 0 && nlayers >= layers && layers > 1 && b->depth == 1 && !linear) {  // (every layer: their hashes)
+    static int scan = -1;
+    if (scan < 0) scan = getenv("SAVAGEWIND_LAYER_SCAN") != NULL;
+    if (scan && layer0 == 0 && nlayers >= layers && layers > 1 && b->depth == 1 && !linear) {  // (every layer: their hashes)
         if (b->nlayer_hash != layers) {
             free(b->layer_hash);
             b->layer_hash = calloc(layers, sizeof *b->layer_hash);
@@ -1010,8 +1012,10 @@ void vk_trace_dump(NvnTexture *t) {
 // lighting, which samples the terrain). Here a few layers are hashed each frame in turn (4 MB a frame) and a changed
 // layer is uploaded alone.
 static void layer_scan(NvnTexture *t, TexBackend *b) {
-    static int off = -1;  // SAVAGEWIND_NO_LAYER_SCAN=1: not done (A/B tests)
-    if (off < 0) off = getenv("SAVAGEWIND_NO_LAYER_SCAN") != NULL;
+    // Off unless SAVAGEWIND_LAYER_SCAN=1: TOTK's terrain layers turned out not to come from the CPU (no layer ever
+    // changed), and the scan cost a third of the frame rate (30 -> 10 fps in the first scene).
+    static int off = -1;
+    if (off < 0) off = getenv("SAVAGEWIND_LAYER_SCAN") == NULL;
     if (off || !b->nlayer_hash || !b->layer_hash || b->gpu_owned || !t->addr) return;
     uint32_t layers = t->layout.layers ? t->layout.layers : 1;
     if (layers != b->nlayer_hash || nvn_texture_flags_pitch(t->flags)) return;

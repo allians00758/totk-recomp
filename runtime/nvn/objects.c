@@ -814,6 +814,13 @@ static bool texels(NvnTexture *t, const NvnTextureView *v, const int32_t *r, uin
                 write ? "Write" : "Read", (unsigned long long)t->debug_id, t->width, t->height, t->depth, t->target,
                 t->format, r[0], r[1], r[2], r[3], r[4], r[5], v ? v->setmask : 0, v ? v->base_level : 0, v ? v->min_layer : 0);
     }
+    if (t->layout.layers >= 8) {  // (diagnostics: TOTK's terrain arrays)
+        static int n;
+        if (n++ < 48)
+            LOG("[copy] %sTexels array #%llu %ux%u x%u f%#x region %d,%d,%d %dx%dx%d view %#x layer %u\n", write ? "Write" : "Read",
+                (unsigned long long)t->debug_id, t->width, t->height, t->layout.layers, t->format, r[0], r[1], r[2], r[3], r[4],
+                r[5], v ? v->setmask : 0, v ? v->min_layer : 0);
+    }
     uint32_t level = v && (v->setmask & 1) ? v->base_level : 0;
     if (level >= t->layout.levels) return false;
     LevelLayout l = tegra_level(&t->layout, level);
