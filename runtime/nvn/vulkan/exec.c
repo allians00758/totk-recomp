@@ -5061,6 +5061,21 @@ static void debug_draw(Prog *pr, CmdRec *r, bool indexed) {
             b ? (void *)b->image : NULL);
         LOG("[draw]   shape%d: target %u depth %u levels %u -> layers %u%s\n", i, t->target, t->depth, t->levels, b ? b->layers : 0,
             b && b->base_type == VK_IMAGE_VIEW_TYPE_2D_ARRAY ? " (array)" : "");
+        if (t->layout.layers > 1 && t->layout.fmt && t->addr >= GUEST_LO) {  // which layers' guest storage is zero now
+            uint64_t ls = tegra_layer_size(&t->layout);
+            char zl[600];
+            int k = 0, nz = 0;
+            for (uint32_t ly = 0; ly < t->layout.layers && ls; ly++) {
+                const uint64_t *q = (const uint64_t *)(uintptr_t)(t->addr + ly * ls);
+                uint64_t any = 0;
+                for (uint64_t j = 0; j < ls / 8 && !any; j += 61) any |= q[j];
+                if (any) continue;
+                nz++;
+                if (k < (int)sizeof zl - 8) k += snprintf(zl + k, sizeof zl - k, " %u", ly);
+            }
+            LOG("[draw]   layers%d: %d of %u zero in guest memory (gpu_owned %d):%s\n", i, nz, t->layout.layers, b ? b->gpu_owned : -1,
+                nz ? zl : "");
+        }
         {   // its sampler and swizzle (view swizzle if the pool entry overrides it)
             const NvnTexEntry *e = shader_texture_entry(1, &pr->fi->tex[i]);
             if (e && e->has_view)
