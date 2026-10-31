@@ -847,7 +847,7 @@ static void upload_layers(NvnTexture *t, TexBackend *b, uint32_t level_mask, uin
                     static int nlog;
                     uint64_t nb = (uint64_t)((l.w + b->astc_bw - 1) / b->astc_bw) * ((l.h + b->astc_bh - 1) / b->astc_bh);
                     extern bool g_debug_frame;
-                    if (nlog < 40 || g_debug_frame) {
+                    if ((nlog < 200 && layer == 0) || g_debug_frame) {  // (arrays: layer 0 only, else 121 lines each)
                         nlog++;
                         LOG("[vk] ASTC %ux%u (%ux%u blocks%s) at %llx layer %u: %llu of %llu blocks undecodable, %llu of them all zero\n",
                             l.w, l.h, b->astc_bw, b->astc_bh, b->astc_srgb ? ", sRGB" : "", (unsigned long long)t->addr, layer,
