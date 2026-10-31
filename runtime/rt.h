@@ -12,9 +12,9 @@
 
 // ---- address space layout (guest addresses == host addresses)
 // macOS reserves 0x2_0000_0000-0x70_0000_0000, and guest addresses must fit in 39 bits, so the
-// guest lives in a 12.5 GB window at 0x70_0000_0000 claimed at startup (see main.c).
+// guest lives in a 15.5 GB window at 0x70_0000_0000 claimed at startup (see main.c).
 #define GUEST_LO     0x7000000000ull
-#define GUEST_HI     0x7320000000ull
+#define GUEST_HI     0x73E0000000ull
 // The exefs modules (main, subsdk0..9, sdk) sit back to back from MAIN_BASE, main first, as tools/layout.py
 // places them; the game code library says where each one is (runtime/gamelib.h). Both bounds: tools/layout.py too.
 #define MAIN_BASE    0x7000000000ull
@@ -29,6 +29,10 @@
 #define ALIAS_SIZE   0x0100000000ull
 #define HEAP_BASE    0x7240000000ull
 #define HEAP_MAX     0x00D0000000ull   // 3.25 GB
+// NVN virtual memory pools (nvnMemoryPoolMapVirtual): their addresses, the pages of physical pools mapped into them
+// (runtime/nvn/objects.c). Past the heap and its 256 MB of slack.
+#define VPOOL_BASE   0x7320000000ull
+#define VPOOL_SIZE   0x00C0000000ull   // 3 GB
 
 // ---- loader.c
 typedef struct Module {

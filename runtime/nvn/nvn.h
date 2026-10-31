@@ -152,5 +152,10 @@ void backend_execute(uint64_t handle);            // run a recorded command list
 void backend_present(NvnTexture *tex);            // show a texture in the window
 void backend_texture_destroyed(NvnTexture *tex);
 void backend_pool_written(uint64_t addr, uint64_t size);
+// nvnMemoryPoolMapVirtual: the bytes at src (a physical pool) also at dst (a virtual pool), aliased where the backend
+// can (vulkan: the heap is a dma-buf, mapped again at dst), else copied; src 0: dst unmapped (zero). Then
+// backend_pool_remapped: textures over dst upload what they now show.
+bool backend_alias(uint64_t dst, uint64_t src, uint64_t size);
+void backend_pool_remapped(uint64_t addr, uint64_t size);
 void backend_debug_copies_at(uint64_t addr);  // (debugging) log the recent texture-to-buffer copies that wrote addr
 void nvn_debug_textures_at(uint64_t addr);    // (objects.c, debugging) log the textures whose storage holds addr

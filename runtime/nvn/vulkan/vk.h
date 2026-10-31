@@ -123,6 +123,7 @@ typedef struct TexBackend {
     uint64_t serial;             // which image this is: every image made gets a new one (exec.c's linear targets)
     uint64_t *layer_hash;        // arrays the CPU fills layer by layer (TOTK's terrain): each layer's guest storage
     uint32_t nlayer_hash, layer_scan;  // (textures.c layer_scan: checked a few layers a frame, changed ones uploaded)
+    uint32_t vmap_gen;           // virtual pool mappings seen (textures.c vmap_update)
 } TexBackend;
 
 TexBackend *vk_tex(NvnTexture *t, bool for_render);  // backend image (uploads CPU contents unless for_render)

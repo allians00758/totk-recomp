@@ -5,6 +5,7 @@
 #include <stdarg.h>
 #include <math.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -1043,6 +1044,8 @@ static void layer_scan(NvnTexture *t, TexBackend *b) {
     }
 }
 
+static void vmap_update(NvnTexture *t, TexBackend *b);
+
 TexBackend *vk_tex(NvnTexture *t, bool for_render) {
     TexBackend *b = tex_backend(t);
     if (!for_render && !b->gpu_owned && vk_trace_tex(t))  // (CPU-owned: guest memory is uploaded when it changed)
@@ -1062,6 +1065,7 @@ TexBackend *vk_tex(NvnTexture *t, bool for_render) {
         extern uint64_t prof_up_ns;
         uint64_t t0 = prof_up_ns != ~0ull ? SDL_GetTicksNS() : 0;
         upload_texture(t, b, false);
+        vmap_update(t, b);
         layer_scan(t, b);
         if (prof_up_ns != ~0ull) prof_up_ns += SDL_GetTicksNS() - t0;
     }
@@ -1096,6 +1100,61 @@ void vk_make_scalable_like(NvnTexture *t, NvnTexture *like) {
 uint8_t vk_texture_scale_group(NvnTexture *t) { return tex_backend(t)->rs_group; }
 bool renderer_is_gpu_owned(NvnTexture *t) { return tex_backend(t)->gpu_owned; }
 void backend_pool_written(uint64_t addr, uint64_t size) { (void)addr; (void)size; }
+
+// Virtual pool pages mapped (nvnMemoryPoolMapVirtual): the last VMAP_RING ranges, by generation. A texture in a virtual
+// pool uploads the layers a newer mapping covers (vmap_update) - TOTK maps its terrain arrays a layer at a time - or
+// all of it when it fell further behind.
+#define VMAP_RING 1024
+static struct { uint64_t lo, hi; } vmap_ring[VMAP_RING];
+static _Atomic uint32_t vmap_gen;
+static pthread_mutex_t vmap_lock = PTHREAD_MUTEX_INITIALIZER;
+void backend_pool_remapped(uint64_t addr, uint64_t size) {
+    pthread_mutex_lock(&vmap_lock);
+    uint32_t g = atomic_load(&vmap_gen);
+    vmap_ring[g % VMAP_RING].lo = addr;
+    vmap_ring[g % VMAP_RING].hi = addr + size;
+    atomic_store(&vmap_gen, g + 1);
+    pthread_mutex_unlock(&vmap_lock);
+}
+
+static void vmap_update(NvnTexture *t, TexBackend *b) {
+    uint32_t g = atomic_load(&vmap_gen);
+    if (b->vmap_gen == g) return;
+    uint32_t from = b->vmap_gen;
+    b->vmap_gen = g;
+    if (!b->uploaded || b->gpu_owned || !t->addr || t->addr < VPOOL_BASE || t->addr >= VPOOL_BASE + VPOOL_SIZE) return;
+    uint64_t total = storage_size(t);
+    if (!storage_readable(t, total)) return;
+    uint32_t layers = t->layout.layers ? t->layout.layers : 1;
+    bool linear = nvn_texture_flags_pitch(t->flags);
+    uint64_t layer_size = layers > 1 && !linear ? tegra_layer_size(&t->layout) : total;
+    if (!layer_size) return;
+    uint64_t lo = t->addr, hi = t->addr + total;
+    uint32_t first = ~0u, last = 0;
+    if (g - from >= VMAP_RING) { first = 0; last = layers - 1; }
+    else {
+        pthread_mutex_lock(&vmap_lock);
+        for (uint32_t i = from; i != g; i++) {
+            uint64_t a = vmap_ring[i % VMAP_RING].lo, e = vmap_ring[i % VMAP_RING].hi;
+            if (e <= lo || a >= hi) continue;
+            uint32_t l0 = a > lo ? (uint32_t)((a - lo) / layer_size) : 0;
+            uint32_t l1 = (uint32_t)(((e < hi ? e : hi) - lo - 1) / layer_size);
+            if (l0 < first) first = l0;
+            if (l1 > last) last = l1;
+        }
+        pthread_mutex_unlock(&vmap_lock);
+    }
+    if (first == ~0u) return;
+    if (last >= layers) last = layers - 1;
+    upload_layers(t, b, ~0u, first, last - first + 1);
+    // (what the whole-storage check compares against: these changes are uploaded already)
+    b->sample_hash = fnv_sample((const uint8_t *)(uintptr_t)t->addr, total);
+    if (total <= (4u << 20)) b->data_hash = hash_full((const uint8_t *)(uintptr_t)t->addr, total);
+    static int nlog;
+    if (nlog++ < 24)
+        LOG("[vk] texture #%llu %ux%u x%u (virtual pool): layers %u-%u uploaded after MapVirtual\n", (unsigned long long)t->debug_id,
+            t->width, t->height, layers, first, last);
+}
 
 // Host-produced texel data (decoded video, any thread): applied on the render thread at the texture's next use.
 void renderer_upload_rgba(NvnTexture *t, const void *rgba, uint32_t w, uint32_t h, uint32_t stride) {

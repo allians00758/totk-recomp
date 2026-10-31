@@ -422,11 +422,31 @@ void nvn_pool_describe(uint64_t addr, char *out, size_t n) {
     pthread_mutex_unlock(&g_pools_lock);
 }
 
+// Virtual pools get addresses of their own (VPOOL_BASE..+VPOOL_SIZE, 64 KB aligned, never reused); MapVirtual puts
+// physical pool pages there.
+static uint64_t vpool_alloc(uint64_t size) {
+    static uint64_t next = VPOOL_BASE;
+    static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+    pthread_mutex_lock(&lock);
+    uint64_t a = next, sz = (size + 0xFFFF) & ~0xFFFFull;
+    if (a + sz > VPOOL_BASE + VPOOL_SIZE) a = 0;
+    else next += sz;
+    pthread_mutex_unlock(&lock);
+    return a;
+}
+
 NVN(nvnMemoryPoolInitialize) {
     NvnPool *p = calloc(1, sizeof *p);
     p->storage = G(uint64_t, A(1), 0x10);
     p->size = G(uint64_t, A(1), 0x18);
     p->flags = G(uint32_t, A(1), 8);
+    if ((p->flags & 0x200) && !p->storage) {  // NVN_MEMORY_POOL_FLAGS_VIRTUAL: no memory of its own
+        p->storage = vpool_alloc(p->size);
+        static int n;
+        if (n++ < 16)
+            LOG("[nvn] virtual pool %llx+%llx%s\n", (unsigned long long)p->storage, (unsigned long long)p->size,
+                p->storage ? "" : ": no room (VPOOL_SIZE)");
+    }
     SET_HOST(A(0), p);
     pools_track(p, true);
     {   // (diagnostics) SAVAGEWIND_LOG_POOLS=1: every pool made
@@ -454,28 +474,30 @@ NVN(nvnMemoryPoolFlushMappedRange) {
 }
 NVN(nvnMemoryPoolInvalidateMappedRange) { (void)c; }
 // (pool, count, const NVNmappingRequest[]: {physical pool, physical offset, virtual offset, size, storage class}).
-// GPU addresses are CPU addresses here, so a virtual pool can only stand for memory that already exists: when the
-// requests map it onto one physical pool at a single displacement (BOTW 1.8.2 maps its 0x7300000-byte texture pool
-// onto a physical pool of that size, whole, once), the virtual pool's storage becomes that physical memory.
-// Other mappings (pages scattered over pools) would need aliased memory: logged, left unmapped.
+// GPU addresses are CPU addresses here, so a virtual pool is an address range of its own (vpool_alloc) and each
+// request makes the physical pages show there too: aliased (the same memory at both addresses) where the backend can,
+// copied otherwise; no physical pool: unmapped (zero). TOTK keeps its 121-layer ASTC terrain arrays in virtual pools
+// and maps a layer's pages in as it streams it: with the pool standing for one displacement only (all BOTW needed:
+// its texture pool mapped whole, once), layer 0 showed right and the other 120 read zero - ASTC error blocks, magenta.
 NVN(nvnMemoryPoolMapVirtual) {
     NvnPool *vp = HOST(NvnPool, A(0));
     const uint8_t *rq = AP(2);
     int n = (int)A(1);
-    uint64_t base = 0;
-    bool alias = n > 0;
-    for (int i = 0; i < n && alias; i++) {
+    static int logged, failed;
+    for (int i = 0; vp && vp->storage && i < n; i++) {
         const uint64_t *q = (const uint64_t *)(rq + i * 40);
         NvnPool *pp = q[0] ? HOST(NvnPool, q[0]) : NULL;
-        if (!pp || !pp->storage) { alias = false; break; }  // (unmapping, or a physical pool without memory)
-        uint64_t b = pp->storage + q[1] - q[2];
-        if (i == 0) base = b;
-        else if (b != base) alias = false;
+        uint64_t voff = q[2], size = q[3];
+        if (!size || voff + size > vp->size) continue;
+        uint64_t dst = vp->storage + voff, src = pp && pp->storage ? pp->storage + q[1] : 0;
+        if (!backend_alias(dst, src, size) && failed++ < 8)
+            LOG("[nvn] MapVirtual %llx+%llx <- %llx: copied (not aliased)\n", (unsigned long long)dst, (unsigned long long)size,
+                (unsigned long long)src);
+        backend_pool_remapped(dst, size);
+        if (logged++ < 16)
+            LOG("[nvn] MapVirtual pool %llx +%llx size %llx <- %s%llx\n", (unsigned long long)vp->storage, (unsigned long long)voff,
+                (unsigned long long)size, src ? "" : "unmapped ", (unsigned long long)src);
     }
-    if (alias) vp->storage = base;
-    static int logged;
-    if (!alias && logged++ < 8)
-        LOG("[nvn] MapVirtual pool %llx: %d requests not one contiguous alias (not mapped)\n", (unsigned long long)A(0), n);
     RET(1);
 }
 

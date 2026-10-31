@@ -3132,6 +3132,24 @@ static bool gmem_mapped;     // the heap is GPU memory mapped at its addresses (
 
 #ifdef __linux__
 #include <sys/mman.h>
+static int heap_fd = -1;  // the heap's dma-buf (backend_heap_set)
+
+// nvn.h backend_alias: heap pages are the dma-buf's, so mapping it again at dst makes the same memory show there
+// (the CPU's and the uploads' view; the GPU reads virtual pool textures through their uploads). Pages elsewhere
+// (the alias region's anonymous memory) are copied. src 0: fresh zero pages.
+bool backend_alias(uint64_t dst, uint64_t src, uint64_t size) {
+    if (dst & 0xFFF || size & 0xFFF) return false;
+    if (!src) {
+        mmap((void *)(uintptr_t)dst, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED, -1, 0);
+        return true;
+    }
+    if (heap_fd >= 0 && !(src & 0xFFF) && src >= HEAP_BASE && src + size <= HEAP_BASE + gmem_size &&
+        mmap((void *)(uintptr_t)dst, size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, heap_fd, (off_t)(src - HEAP_BASE)) ==
+            (void *)(uintptr_t)dst)
+        return true;
+    memmove((void *)(uintptr_t)dst, (const void *)(uintptr_t)src, size);
+    return false;
+}
 // On amdgpu the import is a userptr buffer, and the kernel gets every page of every userptr buffer again at each
 // submission: on the Steam Deck ~4 ms a submit for the 3 GB heap (0.03 ms without it), half of a 40 ms frame. So
 // there the heap is GPU memory from the start: the first SetHeapSize (kernel.c), before the game has touched the
@@ -3177,7 +3195,8 @@ void backend_heap_set(uint64_t size) {
         return;
     }
     void *p = mmap((void *)(uintptr_t)HEAP_BASE, size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 0);
-    close(fd);  // (the mapping keeps the dma-buf)
+    if (p == (void *)(uintptr_t)HEAP_BASE) heap_fd = fd;  // (kept: backend_alias maps heap pages again elsewhere)
+    else close(fd);
     if (p != (void *)(uintptr_t)HEAP_BASE) {
         LOG("[vk] guest heap as GPU memory: mapping failed, imported instead\n");
         mmap((void *)(uintptr_t)HEAP_BASE, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED, -1, 0);
@@ -3201,6 +3220,11 @@ void backend_heap_set(uint64_t size) {
 }
 #else
 void backend_heap_set(uint64_t size) { (void)size; }
+bool backend_alias(uint64_t dst, uint64_t src, uint64_t size) {
+    if (src) memmove((void *)(uintptr_t)dst, (const void *)(uintptr_t)src, size);
+    else memset((void *)(uintptr_t)dst, 0, size);
+    return !src;
+}
 #endif
 
 static VkDescriptorBufferInfo gmem_info(void) {

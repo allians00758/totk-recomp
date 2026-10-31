@@ -514,6 +514,12 @@ void renderer_mark_gpu_owned(NvnTexture *t) { tex_backend(t)->gpu_owned = true; 
 bool renderer_is_gpu_owned(NvnTexture *t) { return tex_backend(t)->gpu_owned; }
 
 void backend_pool_written(uint64_t addr, uint64_t size) { (void)addr; (void)size; }
+bool backend_alias(uint64_t dst, uint64_t src, uint64_t size) {  // (copied: virtual pools, see nvn.h)
+    if (src) memmove((void *)(uintptr_t)dst, (const void *)(uintptr_t)src, size);
+    else memset((void *)(uintptr_t)dst, 0, size);
+    return !src;
+}
+void backend_pool_remapped(uint64_t addr, uint64_t size) { (void)addr; (void)size; }
 void backend_debug_copies_at(uint64_t addr) { (void)addr; }
 
 // Host-produced texel data (decoded video): upload straight into the Metal texture.
