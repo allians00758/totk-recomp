@@ -13,3 +13,8 @@ void astc_decode_ldr(const uint8_t *blocks, uint32_t width, uint32_t height, uin
 
 // One block -> bw*bh*4 bytes (rows of bw texels). Returns false for an error block (output magenta).
 bool astc_decode_block(const uint8_t block[16], uint32_t bw, uint32_t bh, bool srgb, uint8_t *rgba_out);
+
+// What error blocks decode to (default magenta, FF 00 FF FF, as astcenc - the tests compare with it). The Switch's GPU
+// gives transparent black (0 0 0 0) for them: TOTK samples layers of its terrain arrays it never filled - zero
+// blocks - and on the console they add nothing; magenta, they tinted its whole first scene (runtime/nvn/vulkan).
+extern uint8_t astc_error_rgba[4];

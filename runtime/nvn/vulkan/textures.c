@@ -831,6 +831,11 @@ static void upload_layers(NvnTexture *t, TexBackend *b, uint32_t level_mask, uin
             if (!((level_mask >> lv) & 1)) continue;
             LevelLayout l = tegra_level(&t->layout, lv);
             if (b->astc_bw) {  // blocks -> linear block rows -> RGBA8 texels
+                static int err_set;
+                if (!err_set) {  // error blocks: transparent black, as the Switch (SAVAGEWIND_ASTC_MAGENTA=1: magenta, to see them)
+                    err_set = 1;
+                    if (!getenv("SAVAGEWIND_ASTC_MAGENTA")) memset(astc_error_rgba, 0, 4);
+                }
                 const uint8_t *src = (const uint8_t *)(uintptr_t)t->addr + layer * layer_size + l.offset;
                 uint8_t *blocks = malloc((uint64_t)l.wb * l.hb * 16);
                 if (linear) for (uint32_t y = 0; y < l.hb; y++) memcpy(blocks + (uint64_t)y * l.wb * 16, src + (uint64_t)y * t->stride, l.wb * 16);

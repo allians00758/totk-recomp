@@ -530,10 +530,11 @@ static uint8_t fp16_unorm8(int h) {
 
 // ---- block ----
 
+// Error colour (astc.h astc_error_rgba): magenta, as astcenc; the renderer sets transparent black.
+uint8_t astc_error_rgba[4] = {0xFF, 0x00, 0xFF, 0xFF};
+
 static void fill_error(uint8_t *out, int texels) {
-    for (int i = 0; i < texels; i++) {
-        out[4 * i + 0] = 0xFF; out[4 * i + 1] = 0x00; out[4 * i + 2] = 0xFF; out[4 * i + 3] = 0xFF;
-    }
+    for (int i = 0; i < texels; i++) memcpy(out + 4 * i, astc_error_rgba, 4);
 }
 
 bool astc_decode_block(const uint8_t block[16], uint32_t bw, uint32_t bh, bool srgb, uint8_t *out) {
