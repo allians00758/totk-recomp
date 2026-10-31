@@ -663,6 +663,7 @@ static struct {
     uint32_t restart_index;
     bool depth_clamp;
     bool rast_discard;  // nvnCommandBufferSetRasterizerDiscard
+    bool render_off;    // nvnCommandBufferSetRenderEnable(false), or a SetRenderEnableConditional that failed
     uint64_t copy_row_stride, copy_image_stride;
 } st;
 
@@ -4346,6 +4347,7 @@ static void draw_(CmdRec *r, bool indexed) {
     // vertex shader stores to memory. Ignored, those draws rendered into whatever targets were bound. Draws whose
     // vertex shader stores to memory still run (rasterized, as before); the others are skipped.
     if (st.rast_discard && !pr->vi->writes_gmem) { stat_skipped++; return; }
+    if (st.render_off) { stat_skipped++; return; }  // (conditional rendering)
     {   // (debugging GPU hangs) SAVAGEWIND_SKIP_VS=<lo>-<hi>[,...] (hex): draws whose vertex shader code is in one of
         // these address ranges are skipped - halving the range a hang still happens in finds its draw.
         static struct { uint64_t lo, hi; } rg[8];
@@ -6201,10 +6203,32 @@ static void exec_list(uint64_t handle, int depth) {
             break;
         }
         case CMD_SET_RASTERIZER_DISCARD: st.rast_discard = r->x[0] != 0; break;
+        case CMD_SET_RENDER_ENABLE: st.render_off = r->x[0] == 0; break;
+        case CMD_SET_RENDER_ENABLE_COND: {
+            // Conditional rendering: draws and clears go on only if the two 64-bit counters at addr and addr + 16 are
+            // equal (mode 0, RENDER_IF_EQUAL) or differ (mode 1). TOTK wraps nearly every clear in it (a timestamp
+            // report puts 0 in the counter). Evaluated here, in command order, from guest memory: our reports are
+            // written when their command runs (occlusion counts once their submission is done). Ignored, every
+            // clear and draw ran. SAVAGEWIND_NO_COND_RENDER=1: ignored (A/B tests).
+            static int off = -1;
+            if (off < 0) off = getenv("SAVAGEWIND_NO_COND_RENDER") != NULL;
+            uint64_t a = r->x[1];
+            bool on = true;
+            if (!off && a >= GUEST_LO && a + 24 <= GUEST_HI) {
+                uint64_t c0 = *(const uint64_t *)(uintptr_t)a, c1 = *(const uint64_t *)(uintptr_t)(a + 16);
+                on = r->x[0] == 1 ? c0 != c1 : c0 == c1;
+            }
+            st.render_off = !on;
+            static int nlog;
+            if (nlog++ < 8) LOG("[nvn] SetRenderEnableConditional mode %llu at %llx: %s\n", (unsigned long long)r->x[0],
+                                (unsigned long long)a, on ? "render" : "skip");
+            break;
+        }
         case CMD_SET_POLYGON_OFFSET: memcpy(st.poly_offset, r->f, sizeof st.poly_offset); break;
         case CMD_SET_PRIMITIVE_RESTART: st.prim_restart = r->x[0] != 0; st.restart_index = (uint32_t)r->x[1]; break;
         case CMD_SET_COPY_STRIDES: st.copy_row_stride = r->x[0]; st.copy_image_stride = r->x[1]; break;
         case CMD_CLEAR_COLOR: {
+            if (st.render_off) break;  // (conditional rendering)
             snap_reason = "clear-color"; snapshots_invalidate(NULL);
             int index = (int)r->x[0];
             if (getenv("SAVAGEWIND_LOG_CLEARS") && index < st.rt.ncolor && st.rt.color[index])
@@ -6239,6 +6263,7 @@ static void exec_list(uint64_t handle, int depth) {
             break;
         }
         case CMD_CLEAR_DEPTH_STENCIL:
+            if (st.render_off) break;  // (conditional rendering)
             snap_reason = "clear-depth"; snapshots_invalidate(NULL);
             if (st.rt.depth) {
                 bool has_stencil = renderer_format_has_stencil(st.rt.depth->format);
