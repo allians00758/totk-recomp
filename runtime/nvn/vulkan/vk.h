@@ -121,6 +121,8 @@ typedef struct TexBackend {
     bool kept;                   // parked past PARK_FRAMES with its contents (textures.c idle_expire)
     uint64_t drawn_frame, prev_drawn;  // last two frames a pass drew into it (exec.c: one-shot draws)
     uint64_t serial;             // which image this is: every image made gets a new one (exec.c's linear targets)
+    uint64_t *layer_hash;        // arrays the CPU fills layer by layer (TOTK's terrain): each layer's guest storage
+    uint32_t nlayer_hash, layer_scan;  // (textures.c layer_scan: checked a few layers a frame, changed ones uploaded)
 } TexBackend;
 
 TexBackend *vk_tex(NvnTexture *t, bool for_render);  // backend image (uploads CPU contents unless for_render)

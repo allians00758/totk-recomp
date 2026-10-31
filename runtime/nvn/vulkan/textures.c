@@ -474,6 +474,7 @@ static void free_backend(TexBackend *b) {
     images_remove(b);
     destroy_image(b);
     free(b->pending_rgba);
+    free(b->layer_hash);
     free(b);
 }
 
@@ -677,7 +678,8 @@ static void upload_pending(TexBackend *b) {
 }
 
 uint64_t prof_tex_checks, prof_tex_samples, prof_tex_full, prof_tex_full_bytes, prof_tex_dyn;
-static void upload_levels(NvnTexture *t, TexBackend *b, uint32_t level_mask);
+static void upload_layers(NvnTexture *t, TexBackend *b, uint32_t level_mask, uint32_t layer0, uint32_t nlayers);
+#define upload_levels(t, b, m) upload_layers(t, b, m, 0, ~0u)
 
 // Bytes of guest storage the texels occupy: rows at the stride for pitch textures, else the block-linear size.
 static uint64_t storage_size(const NvnTexture *t) {
@@ -780,8 +782,9 @@ static void upload_scaled(VkCommandBuffer cb, TexBackend *b, VkSpan s, VkBufferI
     vk_defer_image(img, mem);
 }
 
-// Guest memory -> image for the levels in level_mask (bit per level), every layer or slice.
-static void upload_levels(NvnTexture *t, TexBackend *b, uint32_t level_mask) {
+// Guest memory -> image for the levels in level_mask (bit per level), every layer or slice (upload_layers: nlayers
+// of them from layer0).
+static void upload_layers(NvnTexture *t, TexBackend *b, uint32_t level_mask, uint32_t layer0, uint32_t nlayers) {
     const FormatInfo *fi = t->layout.fmt;
     VkFmt mf = fmt_of(t->format);
     if (!t->addr || t->target == 10 || !fi || !fi->bpb || !storage_readable(t, storage_size(t))) return;
@@ -792,7 +795,35 @@ static void upload_levels(NvnTexture *t, TexBackend *b, uint32_t level_mask) {
     bool linear = nvn_texture_flags_pitch(t->flags);
     uint64_t layer_size = linear ? t->stride * (t->layout.height ? t->layout.height : 1) : tegra_layer_size(&t->layout);
     uint32_t levels = t->layout.levels < b->levels ? t->layout.levels : b->levels;
-    for (uint32_t layer = 0; layer < layers; layer++) {
+    if (layers > 1 && b->astc_bw && (level_mask & 1)) {  // (diagnostics: TOTK's 121-layer ASTC terrain arrays)
+        static int nlog;
+        if (nlog < 24) {
+            uint32_t zero = 0, first_zero = ~0u;
+            LevelLayout l0 = tegra_level(&t->layout, 0);
+            for (uint32_t layer = 0; layer < layers; layer++) {
+                const uint64_t *p = (const uint64_t *)(uintptr_t)(t->addr + layer * layer_size + l0.offset);
+                uint64_t n = (uint64_t)l0.wb * l0.hb * 2, any = 0;
+                for (uint64_t i = 0; i < n && !any; i += 7) any |= p[i];
+                if (!any) { zero++; if (first_zero == ~0u) first_zero = layer; }
+            }
+            nlog++;
+            LOG("[vk] ASTC array #%llu %ux%u x%u layers (layer size %llx, storage %llx) uploaded: %u layers zero (first %d), frame %llu\n",
+                (unsigned long long)t->debug_id, t->width, t->height, layers, (unsigned long long)layer_size,
+                (unsigned long long)storage_size(t), zero, first_zero == ~0u ? -1 : (int)first_zero,
+                (unsigned long long)vk_frame_counter());
+        }
+    }
+    if (layer0 == 0 && nlayers >= layers && layers > 1 && b->depth == 1 && !linear) {  // (every layer: their hashes)
+        if (b->nlayer_hash != layers) {
+            free(b->layer_hash);
+            b->layer_hash = calloc(layers, sizeof *b->layer_hash);
+            b->nlayer_hash = b->layer_hash ? layers : 0;
+        }
+        for (uint32_t i = 0; i < b->nlayer_hash; i++)
+            b->layer_hash[i] = hash_full((const uint8_t *)(uintptr_t)t->addr + i * layer_size, layer_size);
+    }
+    uint32_t layer_end = nlayers > layers - (layer0 < layers ? layer0 : layers) ? layers : layer0 + nlayers;
+    for (uint32_t layer = layer0; layer < layer_end; layer++) {
         for (uint32_t lv = 0; lv < levels; lv++) {
             if (!((level_mask >> lv) & 1)) continue;
             LevelLayout l = tegra_level(&t->layout, lv);
@@ -972,6 +1003,40 @@ void vk_trace_dump(NvnTexture *t) {
     saves++;
 }
 
+// Arrays the CPU fills layer by layer without telling NVN (on the Switch the GPU reads the same memory): TOTK's two
+// 121-layer ASTC 8x8 terrain arrays, 42 MB each, get their layers as the terrain streams in. The sampled hash of the
+// whole storage (upload_texture) missed those layers - one sample in 20 KB, and too big for the full hash - so they
+// stayed as first uploaded, zero: ASTC error blocks, magenta (the whole first scene was tinted magenta through the
+// lighting, which samples the terrain). Here a few layers are hashed each frame in turn (4 MB a frame) and a changed
+// layer is uploaded alone.
+static void layer_scan(NvnTexture *t, TexBackend *b) {
+    if (!b->nlayer_hash || !b->layer_hash || b->gpu_owned || !t->addr) return;
+    uint32_t layers = t->layout.layers ? t->layout.layers : 1;
+    if (layers != b->nlayer_hash || nvn_texture_flags_pitch(t->flags)) return;
+    uint64_t layer_size = tegra_layer_size(&t->layout);
+    if (!layer_size || !storage_readable(t, layer_size * layers)) return;
+    static uint64_t budget_frame, budget;
+    uint64_t frame = vk_frame_counter();
+    if (budget_frame != frame) { budget_frame = frame; budget = 4 << 20; }
+    uint32_t changed = 0;
+    for (uint32_t n = 0; n < layers && budget >= layer_size; n++) {
+        uint32_t i = b->layer_scan++ % layers;
+        budget -= layer_size;
+        uint64_t h = hash_full((const uint8_t *)(uintptr_t)t->addr + i * layer_size, layer_size);
+        if (h == b->layer_hash[i]) continue;
+        b->layer_hash[i] = h;
+        upload_layers(t, b, ~0u, i, 1);
+        changed++;
+    }
+    if (changed) {
+        b->sample_hash = fnv_sample((const uint8_t *)(uintptr_t)t->addr, storage_size(t));  // (no whole upload for these)
+        static int nlog;
+        if (nlog++ < 16)
+            LOG("[vk] texture #%llu %ux%u x%u layers: %u layer(s) changed by the CPU, uploaded\n", (unsigned long long)t->debug_id,
+                t->width, t->height, layers, changed);
+    }
+}
+
 TexBackend *vk_tex(NvnTexture *t, bool for_render) {
     TexBackend *b = tex_backend(t);
     if (!for_render && !b->gpu_owned && vk_trace_tex(t))  // (CPU-owned: guest memory is uploaded when it changed)
@@ -991,6 +1056,7 @@ TexBackend *vk_tex(NvnTexture *t, bool for_render) {
         extern uint64_t prof_up_ns;
         uint64_t t0 = prof_up_ns != ~0ull ? SDL_GetTicksNS() : 0;
         upload_texture(t, b, false);
+        layer_scan(t, b);
         if (prof_up_ns != ~0ull) prof_up_ns += SDL_GetTicksNS() - t0;
     }
     return b;
