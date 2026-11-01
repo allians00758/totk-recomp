@@ -834,7 +834,14 @@ static void upload_layers(NvnTexture *t, TexBackend *b, uint32_t level_mask, uin
                 static int err_set;
                 if (!err_set) {  // error blocks: transparent black, as the Switch (SAVAGEWIND_ASTC_MAGENTA=1: magenta, to see them)
                     err_set = 1;
-                    if (!getenv("SAVAGEWIND_ASTC_MAGENTA")) memset(astc_error_rgba, 0, 4);
+                    // Undecodable blocks are almost all never-filled memory: TotK's 121-layer terrain material arrays
+                    // keep layers 1-120 zero (who should fill them is still open), and the cave's lighting probe is
+                    // rendered from them. Transparent black left the whole cave unlit; until those layers arrive,
+                    // a neutral opaque grey lights it plausibly. SAVAGEWIND_ASTC_MAGENTA=1: magenta (to see them),
+                    // SAVAGEWIND_ASTC_BLACK=1: transparent black.
+                    static const uint8_t grey[4] = {0x80, 0x80, 0x80, 0xFF};
+                    if (getenv("SAVAGEWIND_ASTC_BLACK")) memset(astc_error_rgba, 0, 4);
+                    else if (!getenv("SAVAGEWIND_ASTC_MAGENTA")) memcpy(astc_error_rgba, grey, 4);
                 }
                 const uint8_t *src = (const uint8_t *)(uintptr_t)t->addr + layer * layer_size + l.offset;
                 uint8_t *blocks = malloc((uint64_t)l.wb * l.hb * 16);
