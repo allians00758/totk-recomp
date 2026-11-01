@@ -2320,7 +2320,10 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
     free(body.buf);
     if (stage == STAGE_VERTEX) {
         if (key && key->flip_y) sp(&s, "  gl_Position.y = -gl_Position.y;\n");
-        if (key && key->depth_minus_one) sp(&s, "  gl_Position.z = (gl_Position.z + gl_Position.w) * 0.5f;\n");
+        // -w..w to 0..w as the hardware viewport does it, scale then add: z * 0.5 is exact, so a depth written as 2d - 1
+        // lands back on d bit for bit. (z + w) * 0.5 rounded the sum: TotK's lights test EQUAL against material IDs a
+        // fragment shader wrote as gl_FragDepth = d, matched nothing, and the deferred lighting stayed black.
+        if (key && key->depth_minus_one) sp(&s, "  gl_Position.z = gl_Position.z * 0.5f + gl_Position.w * 0.5f;\n");
     } else if (stage == STAGE_FRAGMENT) {
         int r = 0;
         for (int rt = 0; rt < 8; rt++) {
