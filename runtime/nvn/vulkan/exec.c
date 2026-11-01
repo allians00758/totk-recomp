@@ -5029,7 +5029,12 @@ static void skin_check(Prog *pr, CmdRec *r, bool indexed) {
     if (!((pr->vi->attr_mask >> 0) & 1) || !((pr->vi->attr_mask >> 6) & 1) || !((pr->vi->cbuf_mask >> 5) & 1)) return;
     if (st.nattrib < 7) return;
     uint32_t f0 = st.attrib[0] & 0xFF, f6 = st.attrib[6] & 0xFF, f4 = st.nattrib > 4 && ((pr->vi->attr_mask >> 4) & 1) ? st.attrib[4] & 0xFF : 0;
-    if (f0 != 0x29 || (f6 != 0x27 && f6 != 0x03) || (f6 == 0x27 && f4 != 0x25)) return;
+    if ((f0 != 0x29 && f0 != 0x22 && f0 != 0x2E) || (f6 != 0x27 && f6 != 0x03) || (f6 == 0x27 && f4 != 0x25)) {
+        LOG("[skin] vs %llx: not checked (position %#x, indices %#x, weights %#x)\n", (unsigned long long)st.program->stages[0].code_addr, f0, f6, f4);
+        return;
+    }
+    bool second = st.nattrib > 7 && ((pr->vi->attr_mask >> 7) & 1) && ((pr->vi->attr_mask >> 5) & 1) &&
+                  (st.attrib[7] & 0xFF) == 0x27 && (st.attrib[5] & 0xFF) == 0x25;  // (8 bones: a7 indices, a5 weights)
     Range pal = st.ubuf[0][2];
     if (!pal.addr || !pal.size) return;
     const float *m = (const float *)(uintptr_t)pal.addr;
@@ -5041,10 +5046,10 @@ static void skin_check(Prog *pr, CmdRec *r, bool indexed) {
         uint64_t v = indexed ? (r->x[1] == 0 ? ((const uint8_t *)(uintptr_t)r->x[3])[k] : r->x[1] == 1 ? ((const uint16_t *)(uintptr_t)r->x[3])[k]
                                                                                          : ((const uint32_t *)(uintptr_t)r->x[3])[k]) + (int32_t)r->x[4]
                              : r->x[1] + k;
-        const uint8_t *at[3];
-        int ai[3] = {0, 6, 4};
+        const uint8_t *at[5] = {0};
+        int ai[5] = {0, 6, 4, 7, 5};
         bool ok = true;
-        for (int q = 0; q < 3 && ok; q++) {
+        for (int q = 0; q < (second ? 5 : 3) && ok; q++) {
             if (q == 2 && f6 != 0x27) { at[q] = NULL; continue; }
             uint32_t a = (uint32_t)ai[q], s = (st.attrib[a] >> 8) & 0x1F, off = st.attrib[a] >> 13;
             if (s >= 16 || !st.vbuf[s].addr) { ok = false; break; }
@@ -5053,9 +5058,12 @@ static void skin_check(Prog *pr, CmdRec *r, bool indexed) {
             at[q] = (const uint8_t *)(uintptr_t)(st.vbuf[s].addr + o);
         }
         if (!ok) continue;
-        uint16_t hp[3];
-        memcpy(hp, at[0], 6);
-        float p[3] = {dbg_half(hp[0]), dbg_half(hp[1]), dbg_half(hp[2])}, out[3] = {0}, wsum = 0;
+        float p[3], out[3] = {0}, wsum = 0;
+        if (f0 == 0x29) {
+            uint16_t hp[3];
+            memcpy(hp, at[0], 6);
+            p[0] = dbg_half(hp[0]); p[1] = dbg_half(hp[1]); p[2] = dbg_half(hp[2]);
+        } else memcpy(p, at[0], 12);
         int nb = f6 == 0x27 ? 4 : 1;
         {  // indices overlapped by the weights (TotK's 12-byte vertices: 3 indices at +6, 3 weights at +9): fewer bones
             uint32_t s6 = (st.attrib[6] >> 8) & 0x1F, o6 = st.attrib[6] >> 13, s4 = (st.attrib[4] >> 8) & 0x1F, o4 = st.attrib[4] >> 13;
@@ -5068,6 +5076,15 @@ static void skin_check(Prog *pr, CmdRec *r, bool indexed) {
             if (w == 0) continue;
             wsum += w;
             uint32_t idx = at[1][b];
+            if (idx >= nmat) { oob++; continue; }
+            const float *mm = m + idx * 12;
+            for (int c = 0; c < 3; c++) out[c] += w * (mm[4 * c] * p[0] + mm[4 * c + 1] * p[1] + mm[4 * c + 2] * p[2] + mm[4 * c + 3]);
+        }
+        for (int b = 0; second && b < 4; b++) {
+            float w = at[4][b] / 255.0f;
+            if (w == 0) continue;
+            wsum += w;
+            uint32_t idx = at[3][b];
             if (idx >= nmat) { oob++; continue; }
             const float *mm = m + idx * 12;
             for (int c = 0; c < 3; c++) out[c] += w * (mm[4 * c] * p[0] + mm[4 * c + 1] * p[1] + mm[4 * c + 2] * p[2] + mm[4 * c + 3]);
@@ -5089,9 +5106,9 @@ static void skin_check(Prog *pr, CmdRec *r, bool indexed) {
         float dx = pos[i][0] - cen[0], dy = pos[i][1] - cen[1], dz = pos[i][2] - cen[2];
         if (dx * dx + dy * dy + dz * dz > 9.0f) far++;
     }
-    LOG("[skin] vs %llx fs %016llx: %llu vertices, box %.2f %.2f %.2f .. %.2f %.2f %.2f, %llu over 3 m from the centre, %llu on bones past the "
+    LOG("[skin] vs %llx fs %016llx%s: %llu vertices, box %.2f %.2f %.2f .. %.2f %.2f %.2f, %llu over 3 m from the centre, %llu on bones past the "
         "palette (%u), %llu weights not summing to 1, %llu non-finite\n", (unsigned long long)st.program->stages[0].code_addr,
-        (unsigned long long)g_cur_fs_hash, (unsigned long long)nv, lo[0], lo[1], lo[2], hi[0], hi[1], hi[2], (unsigned long long)far,
+        (unsigned long long)g_cur_fs_hash, second ? " (8 bones)" : f0 != 0x29 ? " (float position)" : "", (unsigned long long)nv, lo[0], lo[1], lo[2], hi[0], hi[1], hi[2], (unsigned long long)far,
         (unsigned long long)oob, nmat, (unsigned long long)wbad, (unsigned long long)nonfin);
     if (f6 != 0x27 || (!far && wbad * 2 < nv)) return;  // (one-bone draws: whole rooms, legitimately big)
     LOG("[skin]   layout:");  // (suspect: the layout and the first vertices' bytes, every attribute)
