@@ -1355,6 +1355,10 @@ static void *aw_poll(void *arg) {
             }
         if (t - last_report >= 15) {
             last_report = t;
+            if ((int)t % 60 < 15 && t > 1) {
+                extern void fs_reads_of_files(void);
+                fs_reads_of_files();
+            }
             for (int k = 0; k < naw; k++)
                 LOG("[watch] %.0f s: array %llx: %u of %u layers non-zero\n", t, (unsigned long long)aw[k].addr,
                     aw[k].nonzero, aw[k].layers);
@@ -1388,6 +1392,8 @@ void kernel_watch_array(uint64_t addr, uint64_t layer_size, uint32_t layers) {
     fs_reads_over(addr, addr + layer_size);
     LOG("[watch]   file reads into layers 1+:\n");
     fs_reads_over(addr + layer_size, addr + layer_size * layers);
+    extern void fs_reads_of_files(void);
+    fs_reads_of_files();
     static bool started;
     if (!started) {
         started = true;

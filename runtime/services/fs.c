@@ -574,6 +574,34 @@ void fs_reads_over(uint64_t lo, uint64_t hi) {
     LOG("[watch]   %d romfs reads (of the last %llu) cover it\n", shown, (unsigned long long)(n - first));
 }
 
+// (debug) Every read of a RomFS file whose path contains SAVAGEWIND_WATCH_FILES (default "TexToGo/Material", TotK's
+// terrain material textures): how much of the file was read and where it went, summed per file.
+void fs_reads_of_files(void) {
+    const char *m = getenv("SAVAGEWIND_WATCH_FILES");
+    if (!m || !*m) m = "TexToGo/Material";
+    uint64_t n = fsr_n, first = n > FSR_N ? n - FSR_N : 0;
+    for (int f = 0; f < rom_nfiles; f++) {
+        RomFile *r = &rom_files[f];
+        if (!strstr(r->path, m)) continue;
+        uint64_t bytes = 0, reads = 0, lo = ~0ull, hi = 0;
+        for (uint64_t j = first; j < n; j++) {
+            uint64_t i = j % FSR_N, o = fsr[i].off, l = fsr[i].len;
+            if (o + l <= r->off || o >= r->off + r->size) continue;
+            uint64_t a = o > r->off ? o : r->off, b = o + l < r->off + r->size ? o + l : r->off + r->size;
+            bytes += b - a;
+            if (reads++ < 12)
+                LOG("[watch]   %s: read #%llu file +%llx..+%llx to %llx\n", r->path, (unsigned long long)j,
+                    (unsigned long long)(a - r->off), (unsigned long long)(b - r->off),
+                    (unsigned long long)(fsr[i].addr + (a - o)));
+            if (a - r->off < lo) lo = a - r->off;
+            if (b - r->off > hi) hi = b - r->off;
+        }
+        LOG("[watch]   %s: size %llx, %llu reads, %llx bytes read (file +%llx..+%llx)\n", r->path,
+            (unsigned long long)r->size, (unsigned long long)reads, (unsigned long long)bytes,
+            (unsigned long long)(reads ? lo : 0), (unsigned long long)hi);
+    }
+}
+
 // ------------------------------------------------------------------ IStorage (raw RomFS image)
 typedef struct { int fd; uint64_t size; } Storage;
 
