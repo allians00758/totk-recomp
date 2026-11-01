@@ -4581,6 +4581,34 @@ static void draw_(CmdRec *r, bool indexed) {
             continue;
         }
         k.s.attr_fmt[i] = vertex_format_supported(vertex_format(fmt));
+        {   // An attribute running past the end of its vertex (TotK's 12-byte skinned vertices: RGBA8 weights at +9, the
+            // 4th byte is the next vertex's) reads 3 components: the 4th was never meant, and RADV's per-vertex bounds
+            // (offset + size against the stride) turn such fetches into garbage. SAVAGEWIND_NO_ATTR_TRIM=1: as given.
+            static int notrim = -1;
+            if (notrim < 0) notrim = getenv("SAVAGEWIND_NO_ATTR_TRIM") != NULL;
+            uint32_t stride = stream < (uint32_t)st.nstream ? st.stream[stream][0] : 0;
+            VkFormat f3 = VK_FORMAT_UNDEFINED;
+            switch (k.s.attr_fmt[i]) {
+            case VK_FORMAT_R8G8B8A8_UNORM: f3 = VK_FORMAT_R8G8B8_UNORM; break;
+            case VK_FORMAT_R8G8B8A8_SNORM: f3 = VK_FORMAT_R8G8B8_SNORM; break;
+            case VK_FORMAT_R8G8B8A8_UINT: f3 = VK_FORMAT_R8G8B8_UINT; break;
+            case VK_FORMAT_R8G8B8A8_SINT: f3 = VK_FORMAT_R8G8B8_SINT; break;
+            case VK_FORMAT_R16G16B16A16_SFLOAT: f3 = VK_FORMAT_R16G16B16_SFLOAT; break;
+            case VK_FORMAT_R16G16B16A16_UNORM: f3 = VK_FORMAT_R16G16B16_UNORM; break;
+            case VK_FORMAT_R16G16B16A16_SNORM: f3 = VK_FORMAT_R16G16B16_SNORM; break;
+            case VK_FORMAT_R16G16B16A16_UINT: f3 = VK_FORMAT_R16G16B16_UINT; break;
+            case VK_FORMAT_R16G16B16A16_SINT: f3 = VK_FORMAT_R16G16B16_SINT; break;
+            default: break;
+            }
+            uint32_t bpb = nvn_format_info(fmt)->bpb;
+            if (!notrim && f3 && stride && off + bpb > stride && off + bpb * 3 / 4 <= stride &&
+                vertex_format_supported(f3) == f3) {
+                static int told;
+                if (told++ < 8) LOG("[vk] vertex attribute %d: format %#x at +%u past its %u-byte vertex, read as 3 components\n", i,
+                                    fmt, off, stride);
+                k.s.attr_fmt[i] = f3;
+            }
+        }
         k.s.attr_off[i] = off;
         k.s.attr_bind[i] = stream;
         k.s.used_streams |= 1u << stream;
