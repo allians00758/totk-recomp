@@ -812,6 +812,10 @@ static void upload_layers(NvnTexture *t, TexBackend *b, uint32_t level_mask, uin
                 (unsigned long long)t->debug_id, t->width, t->height, layers, (unsigned long long)layer_size,
                 (unsigned long long)storage_size(t), zero, first_zero == ~0u ? -1 : (int)first_zero,
                 (unsigned long long)vk_frame_counter());
+            if (zero && layers >= 16) {  // (who fills the rest: kernel.c kernel_watch_array)
+                extern void kernel_watch_array(uint64_t addr, uint64_t layer_size, uint32_t layers);
+                kernel_watch_array(t->addr, layer_size, layers);
+            }
         }
     }
     static int scan = -1;

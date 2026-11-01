@@ -1322,7 +1322,81 @@ static void *thread_dump_timer(void *arg) {
 static uint64_t watch_addr, watch_len, deref_off, deref_len;
 static _Atomic uint64_t deref_addr;
 
+// Arrays whose layers stay zero (TotK's 121-layer terrain material arrays, nvn/vulkan/textures.c): every write the
+// runtime makes into them (file reads, GPU copies, MapMemory...) is logged, and a thread reports each layer that
+// turns non-zero - to find out who is supposed to fill them. SAVAGEWIND_NO_ARRAY_WATCH=1: off.
+#define AW_MAX 4
+static struct { uint64_t addr, layer_size; uint32_t layers, nonzero; uint8_t seen[256]; } aw[AW_MAX];
+static _Atomic int naw;
+
+static bool aw_layer_nonzero(int k, uint32_t i) {
+    const uint8_t *p = (const uint8_t *)(uintptr_t)(aw[k].addr + (uint64_t)i * aw[k].layer_size);
+    uint64_t step = aw[k].layer_size / 64 & ~7ull;
+    for (int j = 0; j < 64; j++)
+        if (*(const uint64_t *)(p + j * step)) return true;
+    return false;
+}
+
+static void *aw_poll(void *arg) {
+    (void)arg;
+    double start = plat_now_ns() / 1e9, last_report = 0;
+    for (;;) {
+        double t = plat_now_ns() / 1e9 - start;
+        for (int k = 0; k < naw; k++)
+            for (uint32_t i = 0; i < aw[k].layers && i < 256; i++) {
+                bool nz = aw_layer_nonzero(k, i);
+                if (nz == (bool)aw[k].seen[i]) continue;
+                aw[k].seen[i] = nz;
+                aw[k].nonzero += nz ? 1 : -1;
+                static int nlog;
+                if (nlog++ < 200)
+                    LOG("[watch] %.2f s: array %llx layer %u became %s (%u of %u layers non-zero)\n", t,
+                        (unsigned long long)aw[k].addr, i, nz ? "non-zero" : "zero", aw[k].nonzero, aw[k].layers);
+            }
+        if (t - last_report >= 15) {
+            last_report = t;
+            for (int k = 0; k < naw; k++)
+                LOG("[watch] %.0f s: array %llx: %u of %u layers non-zero\n", t, (unsigned long long)aw[k].addr,
+                    aw[k].nonzero, aw[k].layers);
+        }
+        struct timespec ts = {0, 50000000};
+        nanosleep(&ts, NULL);
+    }
+    return NULL;
+}
+
+void kernel_watch_array(uint64_t addr, uint64_t layer_size, uint32_t layers) {
+    static int off = -1;
+    if (off < 0) off = getenv("SAVAGEWIND_NO_ARRAY_WATCH") != NULL;
+    if (off || !addr || !layer_size || layers < 2) return;
+    for (int k = 0; k < naw; k++) if (aw[k].addr == addr) return;
+    int k = naw;
+    if (k >= AW_MAX) return;
+    aw[k].addr = addr; aw[k].layer_size = layer_size; aw[k].layers = layers;
+    for (uint32_t i = 0; i < layers && i < 256; i++)
+        if ((aw[k].seen[i] = aw_layer_nonzero(k, i))) aw[k].nonzero++;
+    naw = k + 1;
+    LOG("[watch] array %llx: %u layers of %llx bytes watched, %u non-zero now\n", (unsigned long long)addr, layers,
+        (unsigned long long)layer_size, aw[k].nonzero);
+    static bool started;
+    if (!started) {
+        started = true;
+        pthread_t th;
+        pthread_create(&th, NULL, aw_poll, NULL);
+    }
+}
+
 void kernel_watch_write(const char *what, uint64_t addr, uint64_t len) {
+    for (int k = 0; k < naw; k++) {
+        uint64_t lo = aw[k].addr, hi = lo + aw[k].layer_size * aw[k].layers;
+        if (addr < hi && lo < addr + len) {
+            static int nlog;
+            if (nlog++ < 100)
+                LOG("[watch] %s writes %llx+%llx into array %llx (layer %llu, thread %x)\n", what, (unsigned long long)addr,
+                    (unsigned long long)len, (unsigned long long)lo,
+                    (unsigned long long)((addr > lo ? addr - lo : 0) / aw[k].layer_size), t_cur ? t_cur->handle : 0);
+        }
+    }
     uint64_t d = deref_addr;
     if ((watch_len && addr < watch_addr + watch_len && watch_addr < addr + len) ||
         (d && deref_len && addr < d + deref_len && d < addr + len))
