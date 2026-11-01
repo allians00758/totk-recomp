@@ -5087,6 +5087,30 @@ static void skin_check(Prog *pr, CmdRec *r, bool indexed) {
         "palette (%u), %llu weights not summing to 1, %llu non-finite\n", (unsigned long long)st.program->stages[0].code_addr,
         (unsigned long long)g_cur_fs_hash, (unsigned long long)nv, lo[0], lo[1], lo[2], hi[0], hi[1], hi[2], (unsigned long long)far,
         (unsigned long long)oob, nmat, (unsigned long long)wbad, (unsigned long long)nonfin);
+    if (f6 != 0x27 || (!far && wbad * 2 < nv)) return;  // (one-bone draws: whole rooms, legitimately big)
+    LOG("[skin]   layout:");  // (suspect: the layout and the first vertices' bytes, every attribute)
+    for (int a = 0; a < 16 && a < st.nattrib; a++)
+        if ((pr->vi->attr_mask >> a) & 1)
+            LOG(" a%d=%#x/s%u/+%u", a, st.attrib[a] & 0xFF, (st.attrib[a] >> 8) & 0x1F, st.attrib[a] >> 13);
+    for (int sidx = 0; sidx < 4 && sidx < st.nstream; sidx++)
+        if (st.vbuf[sidx].addr) LOG(" | s%d %llx+%llx stride %u", sidx, (unsigned long long)st.vbuf[sidx].addr,
+                                    (unsigned long long)st.vbuf[sidx].size, st.stream[sidx][0]);
+    LOG(" | palette %llx+%llx\n", (unsigned long long)pal.addr, (unsigned long long)pal.size);
+    for (uint64_t k = 0; k < r->x[2] && k < 6; k++) {
+        uint64_t v = indexed ? (r->x[1] == 0 ? ((const uint8_t *)(uintptr_t)r->x[3])[k] : r->x[1] == 1 ? ((const uint16_t *)(uintptr_t)r->x[3])[k]
+                                                                                         : ((const uint32_t *)(uintptr_t)r->x[3])[k]) + (int32_t)r->x[4]
+                             : r->x[1] + k;
+        LOG("[skin]   vertex %llu:", (unsigned long long)v);
+        for (int sidx = 0; sidx < 2 && sidx < st.nstream; sidx++) {
+            if (!st.vbuf[sidx].addr || !st.stream[sidx][0]) continue;
+            uint64_t o = v * st.stream[sidx][0];
+            if (o + st.stream[sidx][0] > st.vbuf[sidx].size) continue;
+            const uint8_t *p = (const uint8_t *)(uintptr_t)(st.vbuf[sidx].addr + o);
+            LOG(" s%d=", sidx);
+            for (uint32_t b = 0; b < st.stream[sidx][0] && b < 32; b++) LOG("%02x", p[b]);
+        }
+        LOG("\n");
+    }
 }
 
 static void debug_draw(Prog *pr, CmdRec *r, bool indexed) {
