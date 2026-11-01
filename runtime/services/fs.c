@@ -599,6 +599,49 @@ void fs_reads_of_files(void) {
         LOG("[watch]   %s: size %llx, %llu reads, %llx bytes read (file +%llx..+%llx)\n", r->path,
             (unsigned long long)r->size, (unsigned long long)reads, (unsigned long long)bytes,
             (unsigned long long)(reads ? lo : 0), (unsigned long long)hi);
+        // Once per file: its header and its zstd frames, read from the RomFS image (not from guest memory, which the
+        // game may have freed): how the surfaces (layers x mips) are stored.
+        static char done[8][96];
+        int seen = 0, slot = -1;
+        for (int k = 0; k < 8; k++) {
+            if (!strcmp(done[k], r->path)) seen = 1;
+            if (!done[k][0] && slot < 0) slot = k;
+        }
+        if (seen || slot < 0 || r->size > (256u << 20) || romfs_fd < 0) continue;
+        snprintf(done[slot], sizeof done[slot], "%s", r->path);
+        uint8_t *buf = malloc(r->size);
+        if (!buf) continue;
+        if (pread(romfs_fd, buf, r->size, r->off) != (ssize_t)r->size) { free(buf); continue; }
+        char hex[3 * 32 + 1];
+        for (uint64_t o = 0; o < 0x200 && o < r->size; o += 32) {
+            int h = 0;
+            for (int j = 0; j < 32 && o + j < r->size; j++) h += snprintf(hex + h, sizeof hex - h, "%02x ", buf[o + j]);
+            LOG("[txtg] %s +%03llx: %s\n", r->path, (unsigned long long)o, hex);
+        }
+        uint64_t frames = 0, prev = 0;
+        for (uint64_t o = 0; o + 18 <= r->size; o++) {
+            if (buf[o] != 0x28 || buf[o + 1] != 0xb5 || buf[o + 2] != 0x2f || buf[o + 3] != 0xfd) continue;
+            uint8_t fhd = buf[o + 4];
+            int fcs_flag = fhd >> 6, single = fhd >> 5 & 1, did_flag = fhd & 3;
+            uint64_t q = o + 5 + (single ? 0 : 1), dict = 0, cs = ~0ull;
+            static const int dsz[4] = {0, 1, 2, 4};
+            for (int j = 0; j < dsz[did_flag]; j++) dict |= (uint64_t)buf[q + j] << (8 * j);
+            q += dsz[did_flag];
+            int fsz = fcs_flag == 0 ? (single ? 1 : 0) : fcs_flag == 1 ? 2 : fcs_flag == 2 ? 4 : 8;
+            if (fsz) {
+                cs = 0;
+                for (int j = 0; j < fsz; j++) cs |= (uint64_t)buf[q + j] << (8 * j);
+                if (fsz == 2) cs += 256;
+            }
+            if (frames < 60 || frames % 50 == 0)
+                LOG("[txtg] %s frame %llu at +%llx (%llx after the last): content %llx, dict %llx\n", r->path,
+                    (unsigned long long)frames, (unsigned long long)o, (unsigned long long)(o - prev),
+                    (unsigned long long)cs, (unsigned long long)dict);
+            prev = o;
+            frames++;
+        }
+        LOG("[txtg] %s: %llu zstd frames\n", r->path, (unsigned long long)frames);
+        free(buf);
     }
 }
 
