@@ -1231,12 +1231,18 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
             else sprintf(ex, "bitfieldExtract(%s, int(%s), %d)", cb, sh, width);
             if (dyn) c->info->cbuf_size[idx] = 0x10000;
             set_reg(c, d, ex);
-        } else
-        for (int i = 0; i < n; i++) {
-            char cb[256];
-            cbuf_ref(c, idx, off + 4 * i, dyn, cb);
-            if (dyn) c->info->cbuf_size[idx] = 0x10000;
-            set_reg(c, d + i, cb);
+        } else {
+            // LDC.64 into its own address register (TotK: LDC.64 R26, c[5][R26 + 40]): the hardware reads both words at
+            // the original address, so the address is kept before the first destination overwrites it.
+            bool alias = dyn && n > 1 && a >= d && a < d + n;
+            if (alias) { sp(&c->body, "    { uint ldc_a = %s;\n", dyn); dyn = "ldc_a"; }
+            for (int i = 0; i < n; i++) {
+                char cb[256];
+                cbuf_ref(c, idx, off + 4 * i, dyn, cb);
+                if (dyn) c->info->cbuf_size[idx] = 0x10000;
+                set_reg(c, d + i, cb);
+            }
+            if (alias) sp(&c->body, "    }\n");
         }
     } else if (OPM(0xd000000000000000ull, 0xf600000000000000ull)) {  // TEXS
         emit_texs(c, w, false);
