@@ -2286,7 +2286,14 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
             int kind = key ? key->rt_kind[rt] : 0;
             sp(&s, "layout(location = %d) out %s c%d;\n", rt, kind == 1 ? "ivec4" : kind == 2 ? "uvec4" : "vec4", rt);
         }
-        if (c->omap_depth) info->writes_depth = true;
+        if (c->omap_depth) {
+            info->writes_depth = true;
+            // precise as gl_Position is: TotK writes material IDs as gl_FragDepth = id * (1 - c) + c and lights them
+            // with EQUAL from quads whose (precise) vertex shader computes the same value; left free, the compiler
+            // rewrote this side (a - a*c -> a*(1-c)), the two sides differed in the last bit and the lights matched
+            // nothing.
+            sp(&s, "precise gl_FragDepth;\n");
+        }
     } else {
         sp(&s, "layout(local_size_x_id = 0, local_size_y_id = 1, local_size_z_id = 2) in;\n");
         if (c->uses_shared) sp(&s, "shared uint smem[%u];\n", c->smem_words);
