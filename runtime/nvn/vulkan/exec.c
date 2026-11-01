@@ -5442,6 +5442,12 @@ static void copy_buffer_to_texture(uint64_t src, const TexRefRec *dst) {
     if (!fi || !fi->bpb) return;
     TexBackend *b = vk_tex(t, false);  // prior CPU contents uploaded first
     renderer_mark_gpu_owned(t);
+    {
+        char what[96];
+        snprintf(what, sizeof what, "CopyBufferToTexture (GPU) %llx -> #%llu f%#x", (unsigned long long)src,
+                 (unsigned long long)t->debug_id, t->format);
+        kernel_watch_write(what, t->addr, tegra_total_size(&t->layout));
+    }
     vk_trace_event(t, 0, NULL, 0, "copy from buffer %llx", (unsigned long long)src);
     if (getenv("SAVAGEWIND_LOG_COPIES")) {  // (debugging)
         static int n;
@@ -5565,6 +5571,12 @@ static void copy_texture(const TexRefRec *src, const TexRefRec *dst, uint64_t fl
     dl_note("copy texture %ux%u f%#x -> %ux%u f%#x (%p -> %p)", st_->width, st_->height, st_->format, dt->width, dt->height,
             dt->format, (void *)st_, (void *)dt);
     TexBackend *s = vk_tex(st_, false), *d = vk_tex(dt, true);
+    {
+        char what[96];
+        snprintf(what, sizeof what, "CopyTextureToTexture (GPU) #%llu -> #%llu", (unsigned long long)st_->debug_id,
+                 (unsigned long long)dt->debug_id);
+        kernel_watch_write(what, dt->addr, tegra_total_size(&dt->layout));
+    }
     if (dt->layout.layers >= 8 || st_->layout.layers >= 8) {  // (diagnostics: copies with big arrays - TOTK's terrain)
         static int n;
         if (n++ < 48)

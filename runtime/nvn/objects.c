@@ -651,6 +651,13 @@ static NvnTexture *texture_from_builder(uint64_t b) {
     t->addr = t->pool ? t->pool->storage + t->pool_offset : 0;
     builder_layout(b, &t->layout);
     t->debug_id = next_debug_id++;
+    if (t->addr && t->layout.fmt) {  // (a texture made over a watched array's storage: kernel.c kernel_watch_array)
+        extern void kernel_watch_write(const char *what, uint64_t addr, uint64_t len);
+        char what[96];
+        snprintf(what, sizeof what, "texture #%llu %ux%u f%#x created", (unsigned long long)t->debug_id, t->width, t->height,
+                 t->format);
+        kernel_watch_write(what, t->addr, tegra_total_size(&t->layout));
+    }
     return t;
 }
 

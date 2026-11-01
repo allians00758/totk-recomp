@@ -1378,6 +1378,11 @@ void kernel_watch_array(uint64_t addr, uint64_t layer_size, uint32_t layers) {
     naw = k + 1;
     LOG("[watch] array %llx: %u layers of %llx bytes watched, %u non-zero now\n", (unsigned long long)addr, layers,
         (unsigned long long)layer_size, aw[k].nonzero);
+    extern void nvn_debug_textures_at(uint64_t a);  // (other textures over its layers: views the game streams through)
+    LOG("[watch]   textures over layer 1:\n");
+    nvn_debug_textures_at(addr + layer_size);
+    LOG("[watch]   textures over layer %u:\n", layers / 2);
+    nvn_debug_textures_at(addr + layer_size * (layers / 2));
     static bool started;
     if (!started) {
         started = true;
