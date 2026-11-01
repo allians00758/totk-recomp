@@ -5057,6 +5057,12 @@ static void skin_check(Prog *pr, CmdRec *r, bool indexed) {
         memcpy(hp, at[0], 6);
         float p[3] = {dbg_half(hp[0]), dbg_half(hp[1]), dbg_half(hp[2])}, out[3] = {0}, wsum = 0;
         int nb = f6 == 0x27 ? 4 : 1;
+        {  // indices overlapped by the weights (TotK's 12-byte vertices: 3 indices at +6, 3 weights at +9): fewer bones
+            uint32_t s6 = (st.attrib[6] >> 8) & 0x1F, o6 = st.attrib[6] >> 13, s4 = (st.attrib[4] >> 8) & 0x1F, o4 = st.attrib[4] >> 13;
+            if (nb == 4 && s6 == s4 && o4 > o6 && o4 - o6 < 4) nb = (int)(o4 - o6);
+            uint32_t stride = s4 < 16 ? st.stream[s4][0] : 0;
+            if (nb == 4 && stride && o4 + 4 > stride) nb = (int)(stride - o4);  // (weights running into the next vertex)
+        }
         for (int b = 0; b < nb; b++) {
             float w = nb == 1 ? 1.0f : at[2][b] / 255.0f;
             if (w == 0) continue;
