@@ -1383,6 +1383,11 @@ void kernel_watch_array(uint64_t addr, uint64_t layer_size, uint32_t layers) {
     nvn_debug_textures_at(addr + layer_size);
     LOG("[watch]   textures over layer %u:\n", layers / 2);
     nvn_debug_textures_at(addr + layer_size * (layers / 2));
+    extern void fs_reads_over(uint64_t lo, uint64_t hi);  // (did layer 0 come straight from a file?)
+    LOG("[watch]   file reads into layer 0:\n");
+    fs_reads_over(addr, addr + layer_size);
+    LOG("[watch]   file reads into layers 1+:\n");
+    fs_reads_over(addr + layer_size, addr + layer_size * layers);
     static bool started;
     if (!started) {
         started = true;

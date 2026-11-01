@@ -549,6 +549,31 @@ const char *romfs_file_at(uint64_t off) {
     return NULL;
 }
 
+// Ring of recent RomFS reads (debug): which file's bytes landed where. kernel.c's array watch asks it which reads
+// covered an array's storage (fs_reads_over) when it arms.
+#define FSR_N 16384
+static struct { uint64_t addr, len, off; } fsr[FSR_N];
+static _Atomic uint64_t fsr_n;
+static void fsr_add(uint64_t addr, uint64_t len, uint64_t off) {
+    uint64_t i = fsr_n++ % FSR_N;
+    fsr[i].addr = addr; fsr[i].len = len; fsr[i].off = off;
+}
+void fs_reads_over(uint64_t lo, uint64_t hi) {
+    uint64_t n = fsr_n, first = n > FSR_N ? n - FSR_N : 0;
+    int shown = 0;
+    for (uint64_t j = first; j < n && shown < 40; j++) {
+        uint64_t i = j % FSR_N, a = fsr[i].addr, l = fsr[i].len;
+        if (a < hi && lo < a + l) {
+            const char *path = romfs_file_at(fsr[i].off);
+            LOG("[watch]   romfs read #%llu: %llx+%llx (array +%llx) from image %llx (%s)\n", (unsigned long long)j,
+                (unsigned long long)a, (unsigned long long)l, (unsigned long long)(a > lo ? a - lo : 0),
+                (unsigned long long)fsr[i].off, path ? path : "?");
+            shown++;
+        }
+    }
+    LOG("[watch]   %d romfs reads (of the last %llu) cover it\n", shown, (unsigned long long)(n - first));
+}
+
 // ------------------------------------------------------------------ IStorage (raw RomFS image)
 typedef struct { int fd; uint64_t size; } Storage;
 
@@ -561,6 +586,7 @@ static void storage(Service *s, IpcReq *req, IpcResp *resp) {
         if (!b) { resp->result = MAKE_RESULT(2, 6001); break; }
         if (size > b->size) size = b->size;
         kernel_watch_write("romfs read", b->addr, size);
+        fsr_add(b->addr, size, off);
         ssize_t n = romfs_read(st->fd, (uint8_t *)(uintptr_t)b->addr, size, off);
         if (n < 0) LOG("[fs] storage read failed at %llx: %s\n", off, strerror(errno));
         {
